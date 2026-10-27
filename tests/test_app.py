@@ -499,14 +499,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(sell["plan_candidates"][0]["leg"], "target")
         sell_id = sell["trade"]["id"]
-        status, closed = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell_id})
+        status, linked_target = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell_id})
         self.assertEqual(status, 200)
-        self.assertEqual(closed["plan"]["status"], "closed")
-        self.assertEqual(closed["plan"]["executed"], 1)
-        self.assertEqual(closed["plan"]["actual_unit_price"], "10.600")
+        # 关联成交只建立关联，不自动关闭计划、不自动回填实际成交
+        self.assertEqual(linked_target["plan"]["status"], "open")
+        self.assertIsNone(linked_target["plan"]["executed"])
+        self.assertIsNone(linked_target["plan"]["actual_unit_price"])
+        self.assertEqual(sorted(link["leg"] for link in linked_target["plan"]["links"]), ["known", "target"])
+
+        # 只有显式「回填执行」保存才会关闭并计算达标
+        status, filled = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.6})
+        self.assertEqual(status, 200)
+        self.assertEqual(filled["plan"]["status"], "closed")
+        self.assertEqual(filled["plan"]["executed"], 1)
+        self.assertEqual(filled["plan"]["actual_unit_price"], "10.600")
         expected_net = (1060 - float(sell["trade"]["fee_total"])) - (1000 + float(buy["trade"]["fee_total"]))
-        self.assertAlmostEqual(float(closed["plan"]["actual_net"]), expected_net, places=3)
-        self.assertEqual(sorted(link["leg"] for link in closed["plan"]["links"]), ["known", "target"])
+        self.assertAlmostEqual(float(filled["plan"]["actual_net"]), expected_net, places=3)
 
         # 已完成计划带执行前/后的实际成本（这笔卖出清仓 → 执行后无持仓成本）
         status, plans = self.request("GET", "/api/t-plans")
@@ -518,27 +526,37 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("已完成", error["error"])
 
+        # 作废已关联成交只解除关联，不撤销已保存的回填
         status, _ = self.request("DELETE", f"/api/trades/{sell_id}")
         self.assertEqual(status, 200)
         status, plans = self.request("GET", "/api/t-plans")
         plan = next(item for item in plans["plans"] if item["id"] == plan_id)
-        self.assertEqual(plan["status"], "open")
-        self.assertIsNone(plan["executed"])
+        self.assertEqual(plan["status"], "closed")
+        self.assertEqual(plan["actual_unit_price"], "10.600")
         self.assertEqual([link["leg"] for link in plan["links"]], ["known"])
 
-        status, candidates = self.request("GET", f"/api/t-plans/{plan_id}/candidates?leg=target")
-        self.assertEqual(status, 200)
-        self.assertEqual(candidates["total"], 0)
+        status, error = self.request("GET", f"/api/t-plans/{plan_id}/candidates?leg=target")
+        self.assertEqual(status, 400)
+        self.assertIn("已完成", error["error"])
 
+        # 按计划价新增成交同样只关联，不会把计划变成已完成
+        status, solved = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "buy_first", "quantity": 100, "known_gross": 1000, "target_type": "percent", "target_value": 5})
+        self.assertEqual(status, 201)
+        plan_id = solved["plan"]["id"]
         status, minted = self.request("POST", f"/api/t-plans/{plan_id}/trades", {"leg": "target"})
         self.assertEqual(status, 201)
-        self.assertEqual(minted["plan"]["status"], "closed")
+        self.assertEqual(minted["plan"]["status"], "open")
         self.assertEqual(float(minted["trade"]["unit_price"]), 10.5)
-        self.assertEqual(sorted(link["leg"] for link in minted["plan"]["links"]), ["known", "target"])
+        self.assertEqual([link["leg"] for link in minted["plan"]["links"]], ["target"])
 
+        status, closed = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.5})
+        self.assertEqual(status, 200)
+        self.assertEqual(closed["plan"]["status"], "closed")
+
+        # 解除关联不会把已回填的计划打回进行中
         status, unlinked = self.request("DELETE", f"/api/t-plans/{plan_id}/link?leg=target")
         self.assertEqual(status, 200)
-        self.assertEqual(unlinked["plan"]["status"], "open")
+        self.assertEqual(unlinked["plan"]["status"], "closed")
         status, trades = self.request("GET", "/api/trades?limit=50&offset=0")
         self.assertEqual(len(trades["trades"]), 2)
 

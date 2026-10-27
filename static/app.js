@@ -1185,7 +1185,10 @@ function renderTrades() {
     const expanded = state.expandedFees.has(String(trade.id));
     const toggle = details.length ? `<button type="button" class="history-fee-toggle" data-fee-id="${escapeAttr(trade.id)}" aria-expanded="${expanded}">${expanded ? '收起' : '明细'}</button>` : '';
     const exchange = trade.exchange ? ` · ${escapeHtml(exchangeLabel(trade.exchange))}` : '';
-    const row = `<tr class="history-row"><td>${escapeHtml(trade.trade_date || trade.date || '-')}</td><td class="history-stock"><strong>${escapeHtml(trade.name || trade.security_name || '-')}</strong><small>${escapeHtml(trade.code || trade.symbol_code || '')}${exchange}</small></td><td><span class="history-side ${trade.side === 'sell' ? 'sell' : 'buy'}">${trade.side === 'sell' ? '卖出' : '买入'}</span></td><td>${number(trade.quantity, 4)}</td><td>${priceMoney(unit, currency)}</td><td>${money(amount, currency)}</td><td>${money(fee, currency)}${toggle}</td><td>${historyNetText(trade, currency)}</td><td>${formatMarketCap(trade.market_cap, currency)}</td><td><button class="history-void" type="button" data-id="${escapeAttr(trade.id)}" aria-label="作废这笔交易">作废</button></td></tr>`;
+    const recorded = trade.created_at ? formatDateTime(trade.created_at) : (trade.trade_date || trade.date || '-');
+    const tradeDate = trade.trade_date || trade.date || '';
+    const dateCell = `${escapeHtml(recorded)}${tradeDate && tradeDate !== recorded.slice(0, 10) ? `<small class="history-date-sub">成交日 ${escapeHtml(tradeDate)}</small>` : ''}`;
+    const row = `<tr class="history-row"><td>${dateCell}</td><td class="history-stock"><strong>${escapeHtml(trade.name || trade.security_name || '-')}</strong><small>${escapeHtml(trade.code || trade.symbol_code || '')}${exchange}</small></td><td><span class="history-side ${trade.side === 'sell' ? 'sell' : 'buy'}">${trade.side === 'sell' ? '卖出' : '买入'}</span></td><td>${number(trade.quantity, 4)}</td><td>${priceMoney(unit, currency)}</td><td>${money(amount, currency)}</td><td>${money(fee, currency)}${toggle}</td><td>${historyNetText(trade, currency)}</td><td>${formatMarketCap(trade.market_cap, currency)}</td><td><button class="history-void" type="button" data-id="${escapeAttr(trade.id)}" aria-label="作废这笔交易">作废</button></td></tr>`;
     if (!expanded) return row;
     const total = details.reduce((sum, line) => sum + Number(line.amount ?? 0), 0);
     const cells = details.map(line => {
@@ -1450,7 +1453,7 @@ const WATCH_STATUS_LABELS = { watching: '关注中', bought: '已建仓', reache
 const COST_METHOD_LABELS = { moving_average: '移动加权平均', fifo: '先进先出（FIFO）', diluted: '摊薄成本' };
 const AUDIT_ACTION_LABELS = {
   trade_create: '新增交易', trade_void: '作废交易',
-  t_plan_create: '记录做T测算', t_plan_close: '做T回填', t_plan_delete: '删除做T记录', t_plan_update: '修改做T测算',
+  t_plan_create: '记录做T测算', t_plan_close: '做T回填', t_plan_delete: '删除做T记录', t_plan_update: '修改做T测算', t_plan_reopen: '做T计划恢复',
   cash_entry_create: '入金 / 出金', cash_entry_delete: '撤销资金记录',
   t_plan_link: '关联做T成交', t_plan_unlink: '解除做T关联',
   review_create: '新增复盘', review_update: '修改复盘', review_delete: '删除复盘',
@@ -2136,7 +2139,10 @@ function renderTplans() {
   const pct = (a, b) => (b ? `${Math.round(a / b * 100)}%` : '--');
   const sums = { CNY: { actual: 0, plan: 0 }, HKD: { actual: 0, plan: 0 } };
   executed.forEach(p => { const currency = p.currency === 'HKD' ? 'HKD' : 'CNY'; sums[currency].actual += Number(p.actual_net || 0); sums[currency].plan += Number(p.plan_net || 0); });
-  const curCell = currency => `<div class="tplan-cur"><span>${currency === 'HKD' ? '港币' : '人民币'} <em>${currency}</em></span><strong class="${pnlClass(sums[currency].actual)}">${signedMoney(sums[currency].actual, currency)}</strong><small>实际减计划差额 <span class="${pnlClass(sums[currency].actual - sums[currency].plan)}">${signedMoney(sums[currency].actual - sums[currency].plan, currency)}</span></small></div>`;
+  const curCell = currency => {
+    const deltaText = signedMoney(sums[currency].actual - sums[currency].plan, currency);
+    return `<div class="tplan-cur"><span>${currency === 'HKD' ? '港币' : '人民币'} <em>${currency}</em></span><strong class="${pnlClass(sums[currency].actual)}">${signedMoney(sums[currency].actual, currency)}</strong><small>gap值：<span class="${pnlClass(sums[currency].actual - sums[currency].plan)}">${deltaText}</span></small></div>`;
+  };
   $('#tplan-stats').innerHTML = `<div class="tplan-stat"><span>计划总数</span><strong>${list.length}</strong></div><div class="tplan-stat"><span>待回填</span><strong>${open.length}</strong></div><div class="tplan-stat"><span>已回填</span><strong>${closed.length}</strong></div><div class="tplan-stat"><span>执行率</span><strong>${pct(executed.length, list.length)}</strong></div><div class="tplan-stat"><span>达标率</span><strong>${pct(hit.length, executed.length)}</strong></div>${curCell('CNY')}${curCell('HKD')}`;
   const counts = { all: list.length, open: open.length, closed: closed.length };
   const labels = { all: '全部', open: '待回填', closed: '已回填' };
@@ -2175,7 +2181,7 @@ async function deleteTplan(id) {
 
 function planBadge(p) {
   const links = p.links || [];
-  if (p.status === 'open') return links.some(link => link.leg === 'known') ? '<span class="badge open">进行中</span>' : '<span class="badge open">待回填</span>';
+  if (p.status === 'open') return links.length ? '<span class="badge open">进行中</span>' : '<span class="badge open">待回填</span>';
   if (Number(p.executed) !== 1) return '<span class="badge">未执行</span>';
   const isHit = Number(p.actual_net) >= Number(p.plan_net);
   return `<span class="badge ${isHit ? 'hit' : 'miss'}">${isHit ? '达标' : '未达标'}</span>`;
@@ -2199,7 +2205,7 @@ function planCard(p) {
   const metricLine = actual
     ? `<div class="tplan-rec-line"><span>实际净收益</span><strong class="${pnlClass(Number(p.actual_net))}">${signedMoney(Number(p.actual_net), currency)}</strong><span class="sep">/</span><span>目标</span><strong class="${pnlClass(Number(p.plan_net))}">${money(Number(p.plan_net), currency)}</strong><span class="sep">·</span><span>净收益率</span><strong class="${pnlClass(Number(p.actual_net))}">${base ? signedPct(Number(p.actual_net) / base * 100) : '--'}</strong><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>当前每股成本</span><strong>${priceMoney(cost, currency)}</strong>` : ''}</div>`
     : `<div class="tplan-rec-line"><span>净收益</span><strong class="${pnlClass(net)}">${signedMoney(net, currency)}</strong><span class="sub ${pnlClass(net)}">${base ? signedPct(net / base * 100) : '--'}</span><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>成本</span><strong>${priceMoney(cost, currency)}</strong>${costAfter != null ? `<span class="arrow">→</span><strong>${priceMoney(costAfter, currency)}</strong>` : ''}` : ''}</div>`;
-  return `<article class="tplan-rec" data-id="${escapeAttr(p.id)}"><div class="tplan-rec-head"><div><span class="tplan-rec-name">${escapeHtml(p.name || '-')}</span><span class="tplan-rec-meta">${escapeHtml(p.code || '')} · ${escapeHtml(TDIR_LABELS[p.direction] || p.direction)} · 数量 ${number(qty, 4)}</span></div>${planBadge(p)}</div>${priceLine}${metricLine}<div class="tplan-rec-foot"><small>创建于 ${formatDate(p.created_at)}</small><div class="review-actions"><button class="plan-view" data-id="${escapeAttr(p.id)}" type="button">查看</button>${p.status === 'open' ? `<button class="plan-edit" data-id="${escapeAttr(p.id)}" type="button">编辑</button><button class="plan-feedback" data-id="${escapeAttr(p.id)}" type="button">回填执行</button>` : ''}<button class="plan-delete danger" data-id="${escapeAttr(p.id)}" type="button">删除</button></div></div></article>`;
+  return `<article class="tplan-rec" data-id="${escapeAttr(p.id)}"><div class="tplan-rec-head"><div><span class="tplan-rec-name">${escapeHtml(p.name || '-')}</span><span class="tplan-rec-meta">${escapeHtml(p.code || '')} · ${escapeHtml(TDIR_LABELS[p.direction] || p.direction)} · 数量 ${number(qty, 4)}</span></div>${planBadge(p)}</div>${priceLine}${metricLine}<div class="tplan-rec-foot"><small>创建于 ${formatDateTime(p.created_at)}</small><div class="review-actions"><button class="plan-view" data-id="${escapeAttr(p.id)}" type="button">查看</button>${p.status === 'open' ? `<button class="plan-edit" data-id="${escapeAttr(p.id)}" type="button">编辑</button><button class="plan-feedback" data-id="${escapeAttr(p.id)}" type="button">回填执行</button>` : ''}<button class="plan-delete danger" data-id="${escapeAttr(p.id)}" type="button">删除</button></div></div></article>`;
 }
 
 function openTplansModal() { state.tplanStatus = 'all'; state.tplanSearch = ''; $('#tplan-search').value = ''; openModal('#tplans-modal'); loadTplans(); }
@@ -2273,7 +2279,7 @@ function closeTplanView() { closeModal('#tplan-view-modal'); }
 function openPlanLinkModal(candidates) {
   state.planCandidates = candidates || [];
   state.planLinkPick = 0;
-  $('#plan-link-summary').textContent = '这笔成交匹配到做T计划，关联后将自动回填计划的实际成交。';
+  $('#plan-link-summary').textContent = '这笔成交匹配到做T计划，关联后仍需在「回填执行」确认实际成交。';
   renderPlanLinkList();
   openModal('#plan-link-modal');
 }
@@ -2389,14 +2395,20 @@ function openFeedback(plan) {
   $('#tfeedback-summary-meta').textContent = TDIR_LABELS[plan.direction] || '';
   $('#tfeedback-known-label').textContent = plan.direction === 'buy_first' ? '已知买价' : '已知卖价';
   $('#tfeedback-predict-price-label').textContent = `${otherLabel}价`;
-  $('#tfeedback-known-price').textContent = priceMoney(qty ? Number(plan.known_gross) / qty : 0, currency);
+  const links = plan.links || [];
+  const knownLink = links.find(link => link.leg === 'known');
+  const targetLink = links.find(link => link.leg === 'target');
+  state.tfeedbackKnown = knownLink
+    ? { gross: Number(knownLink.gross_amount), fees: Number(knownLink.fee_total) }
+    : { gross: Number(plan.known_gross), fees: Number(plan.known_fees) };
+  $('#tfeedback-known-price').textContent = priceMoney(qty ? state.tfeedbackKnown.gross / qty : 0, currency);
   $('#tfeedback-qty').textContent = number(qty, 4);
   $('#tfeedback-predict-price').textContent = priceMoney(Number(plan.solved_unit_price), currency);
   $('#tfeedback-target').textContent = signedMoney(net, currency);
   $('#tfeedback-target').className = pnlClass(net);
   $('#tfeedback-currency').textContent = currencyLabel(currency);
   renderTfeedbackLinks(plan);
-  $('#tfeedback-price').value = tplanPriceValue(plan.solved_unit_price, currency);
+  $('#tfeedback-price').value = tplanPriceValue(targetLink ? targetLink.unit_price : plan.solved_unit_price, currency);
   $('#tfeedback-note').value = '';
   $('#tfeedback-price').disabled = false;
   updateFeedbackCalc();
@@ -2433,8 +2445,8 @@ function updateFeedbackCalc() {
   const side = plan.direction === 'buy_first' ? 'sell' : 'buy';
   const rules = (state.feeRules[mk] || []).filter(rule => (mk === 'a' || rule.market === feeMarket) && rule.side === side);
   const fees = rules.reduce((sum, rule) => sum + calculateFee(rule, gross), 0);
-  const knownGross = Number(plan.known_gross);
-  const knownFees = Number(plan.known_fees);
+  const knownGross = state.tfeedbackKnown ? state.tfeedbackKnown.gross : Number(plan.known_gross);
+  const knownFees = state.tfeedbackKnown ? state.tfeedbackKnown.fees : Number(plan.known_fees);
   const net = plan.direction === 'buy_first' ? (gross - fees) - (knownGross + knownFees) : (knownGross - knownFees) - (gross + fees);
   const rawDelta = net - Number(plan.plan_net);
   const delta = (rawDelta < 0 ? -1 : 1) * roundHalfUp3(rawDelta);

@@ -501,36 +501,6 @@ def trade_plan_candidates(conn: sqlite3.Connection, trade: sqlite3.Row) -> list[
     return result
 
 
-def refresh_plan_from_links(conn: sqlite3.Connection, plan_id: int) -> sqlite3.Row | None:
-    """按已关联成交重算计划实际值：目标腿兑现即完成，实际净收益用两腿成交的费用快照。"""
-    plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
-    if plan is None:
-        return None
-    links = plan_links_map(conn, plan_id)
-    target = links.get("target")
-    if target is None:
-        conn.execute(
-            "UPDATE t_plans SET status='open', executed=NULL, actual_unit_price=NULL, actual_gross=NULL, actual_fees=NULL, actual_net=NULL, closed_at=NULL WHERE id = ?",
-            (plan_id,),
-        )
-        return conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
-    known = links.get("known")
-    if known is not None:
-        known_gross, known_fees = decimal(known["gross_amount"]), decimal(known["fee_total"])
-    else:
-        known_gross, known_fees = decimal(plan["known_gross"]), decimal(plan["known_fees"])
-    target_gross, target_fees = decimal(target["gross_amount"]), decimal(target["fee_total"])
-    if plan["direction"] == "buy_first":
-        actual_net = (target_gross - target_fees) - (known_gross + known_fees)
-    else:
-        actual_net = (known_gross - known_fees) - (target_gross + target_fees)
-    conn.execute(
-        "UPDATE t_plans SET status='closed', executed=1, actual_unit_price=?, actual_gross=?, actual_fees=?, actual_net=?, closed_at=? WHERE id=?",
-        (price_text(decimal(target["unit_price"])), money(target_gross), money(target_fees), money(actual_net), now_iso(), plan_id),
-    )
-    return conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
-
-
 def plan_payload_with_links(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     payload = plan_row_dict(row)
     known_gross = decimal(payload["known_gross"])
@@ -2549,7 +2519,6 @@ class TradingHandler(BaseHTTPRequestHandler):
                 stamp = now_iso()
                 conn.execute("INSERT INTO t_plan_links(plan_id, trade_id, leg, linked_at) VALUES (?, ?, ?, ?)", (plan_id, trade_id, leg, stamp))
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_link', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": trade_id, "leg": leg}, ensure_ascii=False), stamp))
-                refresh_plan_from_links(conn, plan_id)
                 conn.commit()
                 row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
                 payload = plan_payload_with_links(conn, row)
@@ -2585,7 +2554,6 @@ class TradingHandler(BaseHTTPRequestHandler):
                 stamp = now_iso()
                 conn.execute("INSERT INTO t_plan_links(plan_id, trade_id, leg, linked_at) VALUES (?, ?, ?, ?)", (plan_id, trade_id, leg, stamp))
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_link', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": trade_id, "leg": leg}, ensure_ascii=False), stamp))
-                refresh_plan_from_links(conn, plan_id)
                 conn.commit()
                 trade = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
                 row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
@@ -2937,7 +2905,6 @@ class TradingHandler(BaseHTTPRequestHandler):
                     raise AppError("没有关联可解除", 404)
                 conn.execute("DELETE FROM t_plan_links WHERE id = ?", (link["id"],))
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_unlink', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": link["trade_id"], "leg": leg}, ensure_ascii=False), now_iso()))
-                refresh_plan_from_links(conn, plan_id)
                 conn.commit()
                 row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
                 payload = plan_payload_with_links(conn, row)
@@ -2973,7 +2940,6 @@ class TradingHandler(BaseHTTPRequestHandler):
                 if link:
                     conn.execute("DELETE FROM t_plan_links WHERE id = ?", (link["id"],))
                     conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_unlink', ?, ?)", (json.dumps({"plan_id": link["plan_id"], "trade_id": trade_id, "leg": link["leg"], "trade_void": True}, ensure_ascii=False), now_iso()))
-                    refresh_plan_from_links(conn, link["plan_id"])
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('trade_void', ?, ?)", (json.dumps({"trade_id": trade_id}), now_iso()))
                 conn.commit()
                 self._send({"ok": True, "id": trade_id, "voided": True})
