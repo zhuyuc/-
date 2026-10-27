@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>做T复盘 · 交互原型</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    .proto-filters{display:flex;gap:var(--sp-3);align-items:end;flex-wrap:wrap;margin-bottom:var(--sp-4)}
+    .proto-filters label{min-width:170px;margin:0}
+    .proto-chart-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)}
+    .proto-chart-row .chart-panel{margin-top:var(--sp-4);min-width:0}
+    .chart-wrap.tall{height:330px}
+    .chart-wrap.half{height:238px}
+    .proto-legend{display:flex;gap:var(--sp-4);align-items:center;font-size:var(--fs-xs);color:var(--muted);font-weight:600}
+    .proto-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+    @media (max-width: 900px){ .proto-chart-row{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div id="toast" class="toast" role="status"></div>
+  <section class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-mark"><span>龙</span><div><strong>且听龙吟</strong></div></div>
+      <nav class="main-nav" aria-label="主导航">
+        <button class="nav-item" data-demo="1"><span class="nav-icon">◈</span>持仓总览</button>
+        <button class="nav-item" data-demo="1"><span class="nav-icon">∿</span>盈亏看板</button>
+        <button class="nav-item" data-demo="1"><span class="nav-icon">＋</span>记录交易</button>
+        <button class="nav-item" data-demo="1"><span class="nav-icon">▤</span>复盘总结</button>
+        <button class="nav-item active"><span class="nav-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h13l-3-3"/><path d="M20 17H7l3 3"/></svg></span>做T复盘</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="account-chip"><span class="avatar">原</span><div><strong>原型演示</strong><small>样例数据</small></div></div></div>
+    </aside>
+    <main class="main-content">
+      <header class="topbar"><div><p class="eyebrow">LOCAL PORTFOLIO</p><h1>做T复盘</h1></div><div class="top-actions"><button class="secondary" id="demo-calc" type="button">做T测算</button><span class="sync-state">原型 · 不与账号数据互通</span></div></header>
+      <div class="notice">交互原型：筛选、三张图 hover、列表与「回填执行」均可点。确认后按此样式落入正式「做T复盘」页（侧边栏新增入口、顶栏「做T记录」跳转本页）。</div>
+
+      <div class="proto-filters">
+        <label>证券<select id="f-security"></select></label>
+        <label>状态<select id="f-status"><option value="">全部</option><option value="open">待回填</option><option value="executed">已执行</option><option value="skipped">未执行</option></select></label>
+        <div class="range-tabs" id="f-range"><button class="range active" data-range="all">全部</button><button class="range" data-range="30d">30 天</button><button class="range" data-range="90d">90 天</button><button class="range" data-range="ytd">本年</button></div>
+      </div>
+
+      <div id="kpi" class="stats-strip"></div>
+
+      <div class="chart-panel">
+        <div class="section-heading compact"><div><h2>逐笔净收益</h2><p>柱=实际净收益（盈红亏绿），横杠=目标净收益；按币种分 pane，避免跨币比较。</p></div><div class="proto-legend"><span><i style="background:var(--up)"></i>盈利</span><span><i style="background:var(--down)"></i>亏损</span><span><i style="background:var(--ink-soft)"></i>目标</span></div></div>
+        <div class="chart-wrap tall"><canvas id="bar-chart"></canvas><div id="bar-tip" class="chart-tip hidden"></div></div>
+      </div>
+
+      <div class="proto-chart-row">
+        <div class="chart-panel">
+          <div class="section-heading compact"><div><h2>累计净收益</h2><p>按币种各一条线，互不相加。</p></div><div id="cum-legend" class="proto-legend"></div></div>
+          <div class="chart-wrap half"><canvas id="cum-chart"></canvas><div id="cum-tip" class="chart-tip hidden"></div></div>
+        </div>
+        <div class="chart-panel">
+          <div class="section-heading compact"><div><h2>月度执行与达标</h2><p>堆叠柱=笔数，折线=达标率（右轴）。</p></div><div class="proto-legend"><span><i style="background:var(--up)"></i>达标</span><span><i style="background:var(--down)"></i>未达标</span><span><i style="background:var(--muted-2)"></i>未执行</span><span><i style="background:var(--teal)"></i>达标率</span></div></div>
+          <div class="chart-wrap half"><canvas id="month-chart"></canvas><div id="month-tip" class="chart-tip hidden"></div></div>
+        </div>
+      </div>
+
+      <div class="section-heading"><div><h2>记录列表</h2><p>待回填的计划保留「回填执行」入口，保存后 KPI 与图表原地刷新。</p></div></div>
+      <div id="plan-list" class="review-stack"></div>
+    </main>
+  </section>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const TDIR_LABELS = { buy_first: '先买后卖', sell_first: '先卖后买' };
+const TODAY = '2026-10-08';
+
+const PLANS = [
+  { id: 1, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'buy_first', quantity: 2000, solved_unit_price: 3.560, plan_net: 72, target_amount: 72, status: 'closed', executed: 1, actual_unit_price: 3.568, actual_net: 86, created_at: '2026-08-06', closed_at: '2026-08-07', note: '开盘即到位' },
+  { id: 2, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'sell_first', quantity: 2000, solved_unit_price: 3.610, plan_net: 65, target_amount: 65, status: 'closed', executed: 1, actual_unit_price: 3.598, actual_net: 41, created_at: '2026-08-18', closed_at: '2026-08-19', note: '' },
+  { id: 3, security_id: 'HK:01810', code: '01810', name: '小米集团-W', currency: 'HKD', direction: 'buy_first', quantity: 400, solved_unit_price: 25.350, plan_net: 120, target_amount: 120, status: 'closed', executed: 1, actual_unit_price: 25.740, actual_net: 158, created_at: '2026-08-26', closed_at: '2026-08-27', note: '' },
+  { id: 4, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'sell_first', quantity: 3000, solved_unit_price: 3.640, plan_net: 90, target_amount: 90, status: 'closed', executed: 1, actual_unit_price: 3.528, actual_net: -35, created_at: '2026-09-03', closed_at: '2026-09-04', note: '追卖后价跌' },
+  { id: 5, security_id: 'HK:01810', code: '01810', name: '小米集团-W', currency: 'HKD', direction: 'sell_first', quantity: 600, solved_unit_price: 24.600, plan_net: 150, target_amount: 150, status: 'closed', executed: 1, actual_unit_price: 24.860, actual_net: 152, created_at: '2026-09-10', closed_at: '2026-09-11', note: '' },
+  { id: 6, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'sell_first', quantity: 2000, solved_unit_price: 3.665, plan_net: 70, target_amount: 70, status: 'closed', executed: 0, actual_unit_price: null, actual_net: null, created_at: '2026-09-15', closed_at: '2026-09-16', note: '价位没到放弃' },
+  { id: 7, security_id: 'HK:01810', code: '01810', name: '小米集团-W', currency: 'HKD', direction: 'buy_first', quantity: 800, solved_unit_price: 25.100, plan_net: 200, target_amount: 200, status: 'closed', executed: 1, actual_unit_price: 25.440, actual_net: 265, created_at: '2026-09-23', closed_at: '2026-09-24', note: '' },
+  { id: 8, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'buy_first', quantity: 2500, solved_unit_price: 3.545, plan_net: 80, target_amount: 80, status: 'closed', executed: 1, actual_unit_price: 3.576, actual_net: 78, created_at: '2026-09-29', closed_at: '2026-09-30', note: '差一点' },
+  { id: 9, security_id: 'HK:01810', code: '01810', name: '小米集团-W', currency: 'HKD', direction: 'sell_first', quantity: 500, solved_unit_price: 25.240, plan_net: 130, target_amount: 130, status: 'closed', executed: 1, actual_unit_price: 24.980, actual_net: 96, created_at: '2026-10-01', closed_at: '2026-10-02', note: '' },
+  { id: 10, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'buy_first', quantity: 2000, solved_unit_price: 3.520, plan_net: 75, target_amount: 75, status: 'closed', executed: 1, actual_unit_price: 3.578, actual_net: 110, created_at: '2026-10-05', closed_at: '2026-10-06', note: '' },
+  { id: 11, security_id: 'HK:01810', code: '01810', name: '小米集团-W', currency: 'HKD', direction: 'buy_first', quantity: 600, solved_unit_price: 24.100, plan_net: 160, target_amount: 160, status: 'open', executed: null, actual_unit_price: null, actual_net: null, created_at: '2026-10-07', closed_at: null, note: '' },
+  { id: 12, security_id: 'A:601162', code: '601162', name: '天风证券', currency: 'CNY', direction: 'sell_first', quantity: 1500, solved_unit_price: 3.600, plan_net: 55, target_amount: 55, status: 'open', executed: null, actual_unit_price: null, actual_net: null, created_at: '2026-10-08', closed_at: null, note: '' }
+];
+
+const state = { security: '', status: '', range: 'all' };
+let barHits = [], cumHits = [], monthHits = [];
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function round3(v) { const mag = Number(`${Math.abs(Number(v))}e3`); return Number(`${Math.round(mag)}e-3`); }
+function money(v, currency = 'CNY') { if (v === null || v === undefined || Number.isNaN(Number(v))) return '--'; const n = Number(v); const abs = round3(n); return `${n < 0 && abs > 0 ? '-' : ''}${absMoney(abs, currency)}`; }
+function absMoney(abs, currency = 'CNY') { return `${currency === 'HKD' ? 'HK$' : '¥'}${abs.toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`; }
+function axisMoney(v, currency) { return `${v < 0 ? '-' : ''}${currency === 'HKD' ? 'HK$' : '¥'}${Math.round(Math.abs(v))}`; }
+function number(v, digits = 2) { return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits }); }
+function toast(message) { const node = $('#toast'); node.textContent = message; node.style.background = 'var(--toast)'; node.classList.add('show'); window.clearTimeout(toast.timer); toast.timer = window.setTimeout(() => node.classList.remove('show'), 2800); }
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function cutoff() {
+  if (state.range === '30d' || state.range === '90d') {
+    const days = state.range === '30d' ? 30 : 90;
+    const d = new Date(TODAY + 'T00:00:00'); d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10);
+  }
+  if (state.range === 'ytd') return TODAY.slice(0, 4) + '-01-01';
+  return '';
+}
+function filtered() {
+  const cut = cutoff();
+  return PLANS.filter(p => {
+    if (state.security && p.security_id !== state.security) return false;
+    if (state.status === 'open' && p.status !== 'open') return false;
+    if (state.status === 'executed' && !(p.status === 'closed' && p.executed === 1)) return false;
+    if (state.status === 'skipped' && !(p.status === 'closed' && p.executed === 0)) return false;
+    const ref = p.closed_at || p.created_at;
+    if (cut && ref < cut) return false;
+    return true;
+  });
+}
+const isExec = p => p.status === 'closed' && p.executed === 1;
+const isHit = p => isExec(p) && Number(p.actual_net) >= Number(p.plan_net);
+const currenciesOf = list => ['CNY', 'HKD'].filter(c => list.some(p => p.currency === c));
+
+function setup(canvas) {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(280, rect.width * ratio); canvas.height = Math.max(140, rect.height * ratio);
+  canvas.style.width = rect.width + 'px'; canvas.style.height = rect.height + 'px';
+  const ctx = canvas.getContext('2d'); ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return { ctx, w: rect.width, h: rect.height };
+}
+function clearWrap(canvas) { canvas.parentElement.querySelectorAll('.chart-empty').forEach(n => n.remove()); }
+function showEmpty(canvas, text) { const div = document.createElement('div'); div.className = 'chart-empty'; div.textContent = text; canvas.parentElement.appendChild(div); const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+function tipShow(tip, wrap, x, y, text) { tip.textContent = text; tip.style.left = `${Math.min(Math.max(x, 90), wrap.getBoundingClientRect().width - 90)}px`; tip.style.top = `${y}px`; tip.classList.remove('hidden'); }
+function tipHide(tip) { tip.classList.add('hidden'); }
+
+function renderKpi() {
+  const list = filtered();
+  const closed = list.filter(p => p.status === 'closed');
+  const executed = closed.filter(isExec);
+  const hit = executed.filter(isHit);
+  const pct = (a, b) => `${Math.round(a / b * 100)}%`;
+  const cells = [
+    ['计划总数', list.length], ['已回填', closed.length],
+    ['执行率', closed.length ? pct(executed.length, closed.length) : '暂无回填'],
+    ['达标率', executed.length ? pct(hit.length, executed.length) : '暂无执行']
+  ];
+  for (const cur of currenciesOf(executed)) {
+    const sum = executed.filter(p => p.currency === cur).reduce((s, p) => s + Number(p.actual_net), 0);
+    const plan = executed.filter(p => p.currency === cur).reduce((s, p) => s + Number(p.plan_net), 0);
+    cells.push([`累计实际净收益 · ${cur}`, money(sum, cur)], [`实际减计划差额 · ${cur}`, money(sum - plan, cur)]);
+  }
+  $('#kpi').innerHTML = cells.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
+}
+
+function drawBar() {
+  const canvas = $('#bar-chart'); clearWrap(canvas);
+  const executed = filtered().filter(isExec).sort((a, b) => a.closed_at.localeCompare(b.closed_at));
+  barHits = [];
+  if (!executed.length) { showEmpty(canvas, '暂无已回填的执行记录'); return; }
+  const { ctx, w, h } = setup(canvas);
+  const curs = currenciesOf(executed);
+  const gap = 30, paneH = (h - gap * (curs.length - 1)) / curs.length;
+  curs.forEach((cur, pi) => {
+    const items = executed.filter(p => p.currency === cur);
+    const top = pi * (paneH + gap);
+    const L = 62, R = 14, T = top + 14, B = top + paneH - 20;
+    const vals = items.flatMap(p => [Number(p.actual_net), Number(p.plan_net)]);
+    let mx = Math.max(...vals, 0), mn = Math.min(...vals, 0);
+    const pad = (mx - mn) || 1; mx += pad * 0.15; mn -= pad * 0.15;
+    const y = v => B - (v - mn) / (mx - mn) * (B - T);
+    ctx.font = '10px Inter, "Microsoft YaHei", sans-serif';
+    for (const tick of [mx, 0, mn]) {
+      ctx.strokeStyle = tick === 0 ? cssVar('--border-strong') : cssVar('--chart-grid');
+      ctx.beginPath(); ctx.moveTo(L, y(tick)); ctx.lineTo(w - R, y(tick)); ctx.stroke();
+      ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'right'; ctx.fillText(axisMoney(tick, cur), L - 8, y(tick) + 3);
+    }
+    ctx.fillStyle = cssVar('--muted'); ctx.textAlign = 'left'; ctx.font = '600 11px Inter, "Microsoft YaHei", sans-serif';
+    ctx.fillText(cur === 'HKD' ? 'HKD' : 'CNY', 10, T + 2);
+    ctx.font = '10px Inter, "Microsoft YaHei", sans-serif';
+    const slot = (w - L - R) / items.length, bw = Math.min(46, slot * 0.52);
+    items.forEach((p, i) => {
+      const cx = L + slot * (i + 0.5), v = Number(p.actual_net);
+      const y0 = y(Math.max(v, 0)), y1 = y(Math.min(v, 0));
+      ctx.fillStyle = v >= 0 ? cssVar('--up') : cssVar('--down');
+      ctx.fillRect(cx - bw / 2, y0, bw, Math.max(2, y1 - y0));
+      ctx.strokeStyle = cssVar('--ink-soft'); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx - bw / 2 - 4, y(Number(p.plan_net))); ctx.lineTo(cx + bw / 2 + 4, y(Number(p.plan_net))); ctx.stroke(); ctx.lineWidth = 1;
+      ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'center'; ctx.fillText(p.closed_at.slice(5), cx, B + 14);
+      barHits.push({ x0: cx - slot / 2, x1: cx + slot / 2, y0: T, y1: B, p });
+    });
+  });
+}
+
+function drawCum() {
+  const canvas = $('#cum-chart'); clearWrap(canvas);
+  const executed = filtered().filter(isExec).sort((a, b) => a.closed_at.localeCompare(b.closed_at));
+  cumHits = [];
+  const curs = currenciesOf(executed);
+  $('#cum-legend').innerHTML = curs.map(cur => {
+    const total = executed.filter(p => p.currency === cur).reduce((s, p) => s + Number(p.actual_net), 0);
+    return `<span><i style="background:var(--teal)"></i>${cur} 累计 ${money(total, cur)}</span>`;
+  }).join('');
+  if (!executed.length) { showEmpty(canvas, '暂无已回填的执行记录'); return; }
+  const { ctx, w, h } = setup(canvas);
+  const gap = 26, paneH = (h - gap * (curs.length - 1)) / curs.length;
+  curs.forEach((cur, pi) => {
+    const items = executed.filter(p => p.currency === cur);
+    let run = 0; const pts = items.map(p => { run += Number(p.actual_net); return { d: p.closed_at, cum: run, inc: Number(p.actual_net), p }; });
+    const top = pi * (paneH + gap);
+    const L = 62, R = 14, T = top + 12, B = top + paneH - 18;
+    const vals = pts.map(q => q.cum);
+    let mx = Math.max(...vals, 0), mn = Math.min(...vals, 0);
+    const pad = (mx - mn) || 1; mx += pad * 0.15; mn -= pad * 0.15;
+    const x = i => pts.length === 1 ? (L + w - R) / 2 : L + i / (pts.length - 1) * (w - L - R);
+    const y = v => B - (v - mn) / (mx - mn) * (B - T);
+    ctx.font = '10px Inter, "Microsoft YaHei", sans-serif';
+    for (const tick of [mx, mn]) {
+      ctx.strokeStyle = cssVar('--chart-grid'); ctx.beginPath(); ctx.moveTo(L, y(tick)); ctx.lineTo(w - R, y(tick)); ctx.stroke();
+      ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'right'; ctx.fillText(axisMoney(tick, cur), L - 8, y(tick) + 3);
+    }
+    ctx.fillStyle = cssVar('--muted'); ctx.textAlign = 'left'; ctx.font = '600 11px Inter, "Microsoft YaHei", sans-serif';
+    ctx.fillText(cur === 'HKD' ? 'HKD' : 'CNY', 10, T + 2);
+    ctx.font = '10px Inter, "Microsoft YaHei", sans-serif';
+    ctx.beginPath();
+    pts.forEach((q, i) => i ? ctx.lineTo(x(i), y(q.cum)) : ctx.moveTo(x(i), y(q.cum)));
+    ctx.strokeStyle = cssVar('--teal'); ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
+    ctx.lineTo(x(pts.length - 1), B); ctx.lineTo(x(0), B); ctx.closePath();
+    ctx.fillStyle = cssVar('--teal'); ctx.globalAlpha = 0.08; ctx.fill(); ctx.globalAlpha = 1;
+    pts.forEach((q, i) => {
+      ctx.beginPath(); ctx.arc(x(i), y(q.cum), 3, 0, Math.PI * 2);
+      ctx.fillStyle = cssVar('--panel'); ctx.fill(); ctx.strokeStyle = cssVar('--teal'); ctx.stroke();
+      cumHits.push({ x: x(i), y: y(q.cum), q, cur });
+    });
+    ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'center';
+    ctx.fillText(pts[0].d.slice(5), x(0), B + 13);
+    ctx.fillText(pts[pts.length - 1].d.slice(5), x(pts.length - 1), B + 13);
+  });
+}
+
+function drawMonth() {
+  const canvas = $('#month-chart'); clearWrap(canvas);
+  const closed = filtered().filter(p => p.status === 'closed');
+  monthHits = [];
+  if (!closed.length) { showEmpty(canvas, '暂无回填记录'); return; }
+  const months = Array.from(new Set(closed.map(p => p.closed_at.slice(0, 7)))).sort();
+  const rows = months.map(m => {
+    const items = closed.filter(p => p.closed_at.slice(0, 7) === m);
+    const hit = items.filter(isHit).length, skip = items.filter(p => p.executed === 0).length;
+    const exec = items.length - skip;
+    return { m, hit, miss: exec - hit, skip, exec, rate: exec ? hit / exec : null };
+  });
+  const { ctx, w, h } = setup(canvas);
+  const L = 40, R = 40, T = 14, B = h - 22;
+  const maxCount = Math.max(...rows.map(r => r.hit + r.miss + r.skip));
+  const y = v => B - v / maxCount * (B - T);
+  ctx.font = '10px Inter, "Microsoft YaHei", sans-serif';
+  for (const tick of [0, Math.ceil(maxCount / 2), maxCount]) {
+    ctx.strokeStyle = cssVar('--chart-grid'); ctx.beginPath(); ctx.moveTo(L, y(tick)); ctx.lineTo(w - R, y(tick)); ctx.stroke();
+    ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'right'; ctx.fillText(String(tick), L - 7, y(tick) + 3);
+  }
+  for (const pctTick of [0, 50, 100]) {
+    const yy = B - pctTick / 100 * (B - T);
+    ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'left'; ctx.fillText(`${pctTick}%`, w - R + 7, yy + 3);
+  }
+  const slot = (w - L - R) / rows.length, bw = Math.min(44, slot * 0.5);
+  rows.forEach((r, i) => {
+    const cx = L + slot * (i + 0.5);
+    let acc = 0;
+    for (const [count, color] of [[r.hit, '--up'], [r.miss, '--down'], [r.skip, '--muted-2']]) {
+      if (!count) continue;
+      const y0 = y(acc + count), y1 = y(acc);
+      ctx.fillStyle = cssVar(color); ctx.fillRect(cx - bw / 2, y0, bw, y1 - y0);
+      acc += count;
+    }
+    ctx.fillStyle = cssVar('--muted-2'); ctx.textAlign = 'center'; ctx.fillText(r.m.slice(5), cx, B + 14);
+    monthHits.push({ x0: cx - slot / 2, x1: cx + slot / 2, r, cx });
+  });
+  ctx.strokeStyle = cssVar('--teal'); ctx.lineWidth = 2; ctx.beginPath();
+  let started = false;
+  rows.forEach((r, i) => {
+    if (r.rate === null) return;
+    const cx = L + slot * (i + 0.5), yy = B - r.rate * (B - T);
+    if (started) ctx.lineTo(cx, yy); else { ctx.moveTo(cx, yy); started = true; }
+  });
+  ctx.stroke(); ctx.lineWidth = 1;
+  rows.forEach((r, i) => {
+    if (r.rate === null) return;
+    const cx = L + slot * (i + 0.5), yy = B - r.rate * (B - T);
+    ctx.beginPath(); ctx.arc(cx, yy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = cssVar('--panel'); ctx.fill(); ctx.strokeStyle = cssVar('--teal'); ctx.stroke();
+  });
+}
+
+function planCard(p) {
+  const currency = p.currency;
+  const otherLabel = p.direction === 'buy_first' ? '预测卖出价' : '预测回补价';
+  const executed = p.executed === 1;
+  let badge = '<span class="badge open">待回填</span>', resultLine = '';
+  if (p.status === 'closed' && !executed) badge = '<span class="badge">未执行</span>';
+  else if (p.status === 'closed' && executed) {
+    const hit = Number(p.actual_net) >= Number(p.plan_net);
+    badge = `<span class="badge ${hit ? 'hit' : 'miss'}">${hit ? '达标' : '未达标'}</span>`;
+    resultLine = `<p class="review-excerpt">实际成交价 ${money(Number(p.actual_unit_price), currency)} · 实际净收益 ${money(Number(p.actual_net), currency)} / 目标 ${money(Number(p.plan_net), currency)}${p.note ? ` · ${escapeHtml(p.note)}` : ''}</p>`;
+  }
+  return `<article class="review-card"><div class="review-head"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.code)} · ${TDIR_LABELS[p.direction]} · 数量 ${number(p.quantity, 4)}</small></div>${badge}</div><p class="review-excerpt">${otherLabel} ${money(Number(p.solved_unit_price), currency)} · 目标净收益 ${money(Number(p.target_amount), currency)}</p>${resultLine}<div class="review-foot"><small>创建于 ${p.created_at}${p.closed_at ? ` · 回填于 ${p.closed_at}` : ''}</small><div class="review-actions">${p.status === 'open' ? `<button class="secondary" data-demo-feedback="1">回填执行</button>` : ''}</div></div></article>`;
+}
+
+function renderList() {
+  const list = filtered().slice().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  $('#plan-list').innerHTML = list.length ? list.map(planCard).join('') : '<div class="empty-state">当前筛选下没有做T记录。</div>';
+}
+
+function renderAll() { renderKpi(); drawBar(); drawCum(); drawMonth(); renderList(); }
+
+$('#bar-chart').addEventListener('mousemove', event => {
+  const rect = event.target.getBoundingClientRect();
+  const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+  const hitBar = barHits.find(b => mx >= b.x0 && mx <= b.x1 && my >= b.y0 && my <= b.y1);
+  const tip = $('#bar-tip');
+  if (!hitBar) { tipHide(tip); return; }
+  const p = hitBar.p;
+  tipShow(tip, event.target.parentElement, (hitBar.x0 + hitBar.x1) / 2, hitBar.y0 + 8, `${p.name} ${TDIR_LABELS[p.direction]} ${p.closed_at}　实际 ${money(Number(p.actual_net), p.currency)} / 目标 ${money(Number(p.plan_net), p.currency)}　${isHit(p) ? '达标' : '未达标'}`);
+});
+$('#bar-chart').addEventListener('mouseleave', () => tipHide($('#bar-tip')));
+$('#cum-chart').addEventListener('mousemove', event => {
+  const rect = event.target.getBoundingClientRect();
+  const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+  let best = null;
+  for (const c of cumHits) { const d = Math.hypot(mx - c.x, my - c.y); if (d < 22 && (!best || d < best.d)) best = { ...c, d }; }
+  const tip = $('#cum-tip');
+  if (!best) { tipHide(tip); return; }
+  tipShow(tip, event.target.parentElement, best.x, best.y, `${best.q.d}　累计 ${money(best.q.cum, best.cur)}（本笔 ${money(best.q.inc, best.cur)}）`);
+});
+$('#cum-chart').addEventListener('mouseleave', () => tipHide($('#cum-tip')));
+$('#month-chart').addEventListener('mousemove', event => {
+  const rect = event.target.getBoundingClientRect();
+  const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+  const col = monthHits.find(b => mx >= b.x0 && mx <= b.x1 && my >= 0 && my <= rect.height);
+  const tip = $('#month-tip');
+  if (!col) { tipHide(tip); return; }
+  const r = col.r;
+  tipShow(tip, event.target.parentElement, col.cx, 26, `${r.m}　回填 ${r.hit + r.miss + r.skip} 笔 · 执行 ${r.exec} · 达标 ${r.hit}　达标率 ${r.rate === null ? '--' : Math.round(r.rate * 100) + '%'}`);
+});
+$('#month-chart').addEventListener('mouseleave', () => tipHide($('#month-tip')));
+
+$('#f-security').addEventListener('change', event => { state.security = event.target.value; renderAll(); });
+$('#f-status').addEventListener('change', event => { state.status = event.target.value; renderAll(); });
+$$('#f-range .range').forEach(button => button.addEventListener('click', () => { state.range = button.dataset.range; $$('#f-range .range').forEach(item => item.classList.toggle('active', item === button)); renderAll(); }));
+$$('[data-demo]').forEach(button => button.addEventListener('click', () => toast('原型仅演示「做T复盘」页交互')));
+$('#demo-calc').addEventListener('click', () => toast('原型仅演示「做T复盘」页交互'));
+document.addEventListener('click', event => { if (event.target.closest('[data-demo-feedback]')) toast('原型演示：正式版此处打开回填弹窗，保存后 KPI 与图表原地刷新'); });
+
+const secs = Array.from(new Map(PLANS.map(p => [p.security_id, p])).values());
+$('#f-security').innerHTML = '<option value="">全部证券</option>' + secs.map(p => `<option value="${p.security_id}">${escapeHtml(p.name)} · ${p.currency}</option>`).join('');
+window.addEventListener('resize', renderAll);
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
+renderAll();
+</script>
+</body>
+</html>
