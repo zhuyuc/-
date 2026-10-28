@@ -246,6 +246,19 @@ class ApiTests(unittest.TestCase):
         self.assertIn("买入 100 股 @ 10.00", summaries["trade_create"])
         self.assertNotIn("A:000001", summaries["trade_create"])
         self.assertEqual(summaries["settings_update"], "成本算法 先进先出（FIFO）")
+        meta = {item["action"]: (item["menu"], item["action_label"]) for item in logs["logs"]}
+        self.assertEqual(meta["trade_create"], ("trade", "新增交易"))
+        self.assertEqual(meta["settings_update"], ("settings", "修改成本算法"))
+        self.assertTrue(any(item["menu"] == "trade" and item["count"] >= 1 for item in logs["menus"]))
+
+        status, filtered = self.request("GET", "/api/audit-logs?limit=50&menu=settings")
+        self.assertEqual(status, 200)
+        self.assertTrue(filtered["logs"])
+        self.assertTrue(all(item["menu"] == "settings" for item in filtered["logs"]))
+        status, searched = self.request("GET", "/api/audit-logs?limit=50&q=settings_update")
+        self.assertEqual(status, 200)
+        self.assertTrue(searched["logs"])
+        self.assertLessEqual(searched["total"], logs["total"])
 
         status, first = self.request("GET", "/api/audit-logs?limit=1&offset=0")
         status, second = self.request("GET", "/api/audit-logs?limit=1&offset=1")
@@ -313,6 +326,23 @@ class ApiTests(unittest.TestCase):
             status, trades = self.request("GET", "/api/trades")
             self.assertIsNone(trades["trades"][0]["market_cap"])
 
+    def test_fee_item_can_be_waived(self):
+        self.register("waivefee")
+        status, data = self.request("GET", "/api/fees?market=A")
+        self.assertEqual(status, 200)
+        rules = data["rules"]
+        for rule in rules:
+            if "佣金" in rule["name"]:
+                rule["waived"] = 1
+        status, _ = self.request("PUT", "/api/fees", {"market": "A", "rules": rules})
+        self.assertEqual(status, 200)
+        status, buy = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "buy", "quantity": 100, "unit_price": 10, "gross_amount": 1000, "trade_date": date.today().isoformat()})
+        self.assertEqual(status, 201)
+        commission = next(item for item in buy["fees"] if "佣金" in item["name"])
+        self.assertEqual(commission["amount"], "0.000")
+        self.assertEqual(commission["status"], "not_charged")
+        self.assertTrue(any(item["status"] == "charged" for item in buy["fees"]))
+
     def test_t_plan_projects_cost_after_round_trip(self):
         self.register("tcost")
         self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "buy", "quantity": 1000, "unit_price": 10, "gross_amount": 10000, "trade_date": "2026-09-21"})
@@ -323,7 +353,8 @@ class ApiTests(unittest.TestCase):
         moving = result["plan"]["cost_after"]
         self.assertEqual(moving["method"], "moving_average")
         self.assertEqual(moving["unit_before"], "10.005")
-        self.assertEqual(moving["unit_after"], "10.009")
+        # 已知腿视为你已持有，只推演目标卖出腿：移动加权下卖出不改变每股成本
+        self.assertEqual(moving["unit_after"], "10.005")
 
         # 比率 5% 与金额 10.5 正算出同一条腿价格（不反解）
         status, by_pct = self.request("POST", "/api/t-plans/solve", {**amount_body, "target_type": "percent", "target_value": 5})
@@ -495,26 +526,28 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(linked["plan"]["status"], "open")
         self.assertEqual([link["leg"] for link in linked["plan"]["links"]], ["known"])
 
+        # 已知腿一律视为你已持有：带不带 plan_id 的预览都只推演目标腿（这里卖出清仓 → 无做T后成本）
+        solve_body = {"security_id": "A:000001", "direction": "buy_first", "quantity": 100, "known_gross": 1000, "target_type": "percent", "target_value": 5, "preview": True}
+        status, with_plan = self.request("POST", "/api/t-plans/solve", {**solve_body, "plan_id": plan_id})
+        self.assertEqual(status, 200)
+        status, without_plan = self.request("POST", "/api/t-plans/solve", solve_body)
+        self.assertEqual(status, 200)
+        self.assertIsNone(with_plan["plan"]["cost_after"]["unit_after"])
+        self.assertIsNone(without_plan["plan"]["cost_after"]["unit_after"])
+
         status, sell = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "sell", "quantity": 100, "unit_price": 10.6, "gross_amount": 1060, "trade_date": today})
         self.assertEqual(status, 201)
         self.assertEqual(sell["plan_candidates"][0]["leg"], "target")
         sell_id = sell["trade"]["id"]
-        status, linked_target = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell_id})
+        status, closed = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell_id})
         self.assertEqual(status, 200)
-        # 关联成交只建立关联，不自动关闭计划、不自动回填实际成交
-        self.assertEqual(linked_target["plan"]["status"], "open")
-        self.assertIsNone(linked_target["plan"]["executed"])
-        self.assertIsNone(linked_target["plan"]["actual_unit_price"])
-        self.assertEqual(sorted(link["leg"] for link in linked_target["plan"]["links"]), ["known", "target"])
-
-        # 只有显式「回填执行」保存才会关闭并计算达标
-        status, filled = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.6})
-        self.assertEqual(status, 200)
-        self.assertEqual(filled["plan"]["status"], "closed")
-        self.assertEqual(filled["plan"]["executed"], 1)
-        self.assertEqual(filled["plan"]["actual_unit_price"], "10.600")
+        # 两笔成交都关联后自动完成：实际值直接取两笔成交的快照
+        self.assertEqual(closed["plan"]["status"], "closed")
+        self.assertEqual(closed["plan"]["executed"], 1)
+        self.assertEqual(closed["plan"]["actual_unit_price"], "10.600")
         expected_net = (1060 - float(sell["trade"]["fee_total"])) - (1000 + float(buy["trade"]["fee_total"]))
-        self.assertAlmostEqual(float(filled["plan"]["actual_net"]), expected_net, places=3)
+        self.assertAlmostEqual(float(closed["plan"]["actual_net"]), expected_net, places=3)
+        self.assertEqual(sorted(link["leg"] for link in closed["plan"]["links"]), ["known", "target"])
 
         # 已完成计划带执行前/后的实际成本（这笔卖出清仓 → 执行后无持仓成本）
         status, plans = self.request("GET", "/api/t-plans")
@@ -526,37 +559,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("已完成", error["error"])
 
-        # 作废已关联成交只解除关联，不撤销已保存的回填
+        # 作废已关联成交会解除关联，计划退回进行中并清空实际值
         status, _ = self.request("DELETE", f"/api/trades/{sell_id}")
         self.assertEqual(status, 200)
         status, plans = self.request("GET", "/api/t-plans")
         plan = next(item for item in plans["plans"] if item["id"] == plan_id)
-        self.assertEqual(plan["status"], "closed")
-        self.assertEqual(plan["actual_unit_price"], "10.600")
+        self.assertEqual(plan["status"], "open")
+        self.assertIsNone(plan["actual_unit_price"])
         self.assertEqual([link["leg"] for link in plan["links"]], ["known"])
 
-        status, error = self.request("GET", f"/api/t-plans/{plan_id}/candidates?leg=target")
-        self.assertEqual(status, 400)
-        self.assertIn("已完成", error["error"])
-
-        # 按计划价新增成交同样只关联，不会把计划变成已完成
-        status, solved = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "buy_first", "quantity": 100, "known_gross": 1000, "target_type": "percent", "target_value": 5})
-        self.assertEqual(status, 201)
-        plan_id = solved["plan"]["id"]
-        status, minted = self.request("POST", f"/api/t-plans/{plan_id}/trades", {"leg": "target"})
-        self.assertEqual(status, 201)
-        self.assertEqual(minted["plan"]["status"], "open")
-        self.assertEqual(float(minted["trade"]["unit_price"]), 10.5)
-        self.assertEqual([link["leg"] for link in minted["plan"]["links"]], ["target"])
-
-        status, closed = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.5})
+        status, candidates = self.request("GET", f"/api/t-plans/{plan_id}/candidates?leg=target")
         self.assertEqual(status, 200)
-        self.assertEqual(closed["plan"]["status"], "closed")
+        self.assertEqual(candidates["total"], 0)
 
-        # 解除关联不会把已回填的计划打回进行中
+        # 重新关联第二笔卖出成交 → 再次自动完成；解除关联 → 退回进行中
+        status, sell2 = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "sell", "quantity": 100, "unit_price": 10.7, "gross_amount": 1070, "trade_date": today})
+        self.assertEqual(status, 201)
+        status, closed2 = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell2["trade"]["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(closed2["plan"]["status"], "closed")
+        self.assertEqual(closed2["plan"]["actual_unit_price"], "10.700")
         status, unlinked = self.request("DELETE", f"/api/t-plans/{plan_id}/link?leg=target")
         self.assertEqual(status, 200)
-        self.assertEqual(unlinked["plan"]["status"], "closed")
+        self.assertEqual(unlinked["plan"]["status"], "open")
+        self.assertIsNone(unlinked["plan"]["actual_unit_price"])
         status, trades = self.request("GET", "/api/trades?limit=50&offset=0")
         self.assertEqual(len(trades["trades"]), 2)
 
@@ -581,6 +607,8 @@ class ApiTests(unittest.TestCase):
         expected = (1100 - float(edited["plan"]["solved_fees"])) - (1000 + float(edited["plan"]["known_fees"]))
         self.assertAlmostEqual(float(edited["plan"]["target_amount"]), expected, places=3)
 
+        status, extra = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "buy", "quantity": 100, "unit_price": 10, "gross_amount": 1000, "trade_date": today})
+        self.assertEqual(status, 201)
         status, edited = self.request("POST", f"/api/t-plans/{plan_id}/edit", {"quantity": 200, "known_gross": 2000, "target_type": "percent", "target_value": 3})
         self.assertEqual(status, 200)
         self.assertTrue(edited["unlinked"])
@@ -591,11 +619,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("不可修改", error["error"])
 
-        status, error = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": False})
-        self.assertEqual(status, 400)
-        self.assertIn("实际成交价", error["error"])
-        status, _ = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.5})
+        status, known200 = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "buy", "quantity": 200, "unit_price": 10, "gross_amount": 2000, "trade_date": today})
+        self.assertEqual(status, 201)
+        status, linked200 = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": known200["trade"]["id"]})
         self.assertEqual(status, 200)
+        self.assertEqual(linked200["plan"]["status"], "open")
+        status, sell200 = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "sell", "quantity": 200, "unit_price": 11, "gross_amount": 2200, "trade_date": today})
+        self.assertEqual(status, 201)
+        status, closed200 = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell200["trade"]["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(closed200["plan"]["status"], "closed")
         status, error = self.request("POST", f"/api/t-plans/{plan_id}/edit", {"quantity": 200, "known_gross": 2000, "target_type": "percent", "target_value": 3})
         self.assertEqual(status, 400)
         self.assertIn("仅进行中的计划", error["error"])
@@ -745,8 +778,11 @@ class ApiTests(unittest.TestCase):
         expected_rate = (float(plan["known_fees"]) + float(plan["solved_fees"])) / float(plan["known_gross"])
         self.assertAlmostEqual(float(plan["round_trip_fee_rate"]), expected_rate, places=8)
 
-        status, _ = self.request("PUT", f"/api/t-plans/{plan_id}", {"executed": True, "actual_unit_price": 10.5})
+        status, sell = self.request("POST", "/api/trades", {"security_id": "A:000001", "side": "sell", "quantity": 100, "unit_price": 10.5, "gross_amount": 1050, "trade_date": today})
+        self.assertEqual(status, 201)
+        status, closed = self.request("POST", f"/api/t-plans/{plan_id}/link", {"trade_id": sell["trade"]["id"]})
         self.assertEqual(status, 200)
+        self.assertEqual(closed["plan"]["status"], "closed")
         status, plans = self.request("GET", "/api/t-plans")
         plan = next(item for item in plans["plans"] if item["id"] == plan_id)
         self.assertIsNone(plan["live_cost_after"])
@@ -790,16 +826,17 @@ class ApiTests(unittest.TestCase):
 
         # 同一组价格，往返净收益与腿序无关
         self.assertEqual(buy_first["plan"]["plan_net"], sell_first["plan"]["plan_net"])
-        # 移动加权口径下：先卖出按卖出前均价结转成本，再回补；腿序颠倒会明显偏大（曾把已知腿与目标腿写反 → 10.060）
-        self.assertEqual(buy_first["plan"]["cost_after"]["unit_after"], "10.009")
-        self.assertEqual(sell_first["plan"]["cost_after"]["unit_after"], "10.010")
-        self.assertEqual(sell_first["plan"]["cost_after"]["unit_before"], "10.005")
+        # 做T后成本只推演目标腿（已知腿视为你已持有）：先买后卖=只推演卖出，移动加权下每股成本不变；先卖后买=只推演回补买入
+        self.assertEqual(buy_first["plan"]["cost_after"]["unit_after"], buy_first["plan"]["cost_after"]["unit_before"])
+        self.assertEqual(buy_first["plan"]["cost_after"]["unit_before"], "10.005")
+        self.assertNotEqual(sell_first["plan"]["cost_after"]["unit_after"], sell_first["plan"]["cost_after"]["unit_before"])
 
-        # 摊薄口径应与腿序无关
+        # 买入腿在移动加权与摊薄下算法相同，两种口径的做T后成本应一致
         self.request("PUT", "/api/settings", {"cost_method": "diluted"})
-        status, buy_first = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "buy_first", "quantity": 100, "known_gross": 1000, "target_type": "amount", "target_value": 10.5})
-        status, sell_first = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "sell_first", "quantity": 100, "known_gross": 1050, "target_type": "amount", "target_value": 10})
-        self.assertEqual(buy_first["plan"]["cost_after"]["unit_after"], sell_first["plan"]["cost_after"]["unit_after"])
+        status, buy_first_d = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "buy_first", "quantity": 100, "known_gross": 1000, "target_type": "amount", "target_value": 10.5})
+        status, sell_first_d = self.request("POST", "/api/t-plans/solve", {"security_id": "A:000001", "direction": "sell_first", "quantity": 100, "known_gross": 1050, "target_type": "amount", "target_value": 10})
+        self.assertEqual(sell_first["plan"]["cost_after"]["unit_after"], sell_first_d["plan"]["cost_after"]["unit_after"])
+        self.assertLess(float(buy_first_d["plan"]["cost_after"]["unit_after"]), float(buy_first_d["plan"]["cost_after"]["unit_before"]))
 
 
 if __name__ == "__main__":

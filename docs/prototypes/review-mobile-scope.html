@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>复盘总结 · 移动端企业筛选方案</title>
+<style>
+  :root{
+    --bg:#f5f7f4; --panel:#ffffff; --ink:#1e2b26; --muted:#6d7b75; --line:#e6e9e3;
+    --teal:#2a7d6f; --teal-deep:#0f3d35; --teal-soft:#e7f2ee; --danger:#c0392b;
+    --shadow:0 10px 30px rgba(16,44,38,.08);
+    --pw:390px; --ph:780px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#eef1ec;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .page{max-width:1320px;margin:0 auto;padding:28px 20px 40px}
+  .page-head h1{font-size:22px;margin:0 0 6px;letter-spacing:-.2px}
+  .page-head p{margin:0;color:var(--muted);font-size:13px;line-height:1.7}
+  .notes{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 26px}
+  .note{font-size:12px;padding:7px 11px;border-radius:999px;background:#fff;border:1px solid var(--line);color:#41524b}
+  .note b{color:var(--teal-deep)}
+  .note.bad{background:#fdf1ef;border-color:#f3d7d2;color:#8d3b30}
+  .frames{display:flex;gap:26px;flex-wrap:wrap;justify-content:center;align-items:flex-start}
+  figure{margin:0;display:flex;flex-direction:column;gap:12px;align-items:center}
+  figcaption{font-size:12.5px;color:#42534c;text-align:center;line-height:1.6}
+  figcaption b{display:inline-block;color:var(--teal-deep);font-size:13px;margin-right:4px}
+  .phone{width:var(--pw);height:var(--ph);border-radius:42px;border:9px solid #1a1f1d;background:var(--bg);position:relative;overflow:hidden;box-shadow:0 24px 60px rgba(16,36,30,.18)}
+  .screen{height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;position:relative}
+  .screen::-webkit-scrollbar{display:none}
+
+  .appbar{background:linear-gradient(140deg,#0d3f36,#0a332c);color:#eaf4f0;padding:16px 16px 0}
+  .brand{display:flex;align-items:center;gap:10px;height:46px}
+  .brand-mark{width:34px;height:34px;border-radius:9px;border:1px solid rgba(255,255,255,.35);display:grid;place-items:center;font-size:15px;font-weight:600}
+  .brand-name{font-size:15px;font-weight:600;letter-spacing:.5px}
+  .brand-user{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12.5px;color:#dcebe5}
+  .avatar{width:26px;height:26px;border-radius:50%;background:#e8f0ec;color:#0d3f36;display:grid;place-items:center;font-size:12px;font-weight:600}
+  .nav{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;padding:6px 0 12px;margin:0 -4px}
+  .nav::-webkit-scrollbar{display:none}
+  .nav span{flex:none;font-size:12.5px;padding:8px 11px;border-radius:8px;color:#cfe2db;white-space:nowrap}
+  .nav span.on{background:rgba(255,255,255,.13);color:#fff;border:1px solid rgba(255,255,255,.14)}
+
+  .content{padding:18px 16px 36px}
+  .eyebrow{font-size:9.5px;letter-spacing:2.2px;color:var(--teal);font-weight:600}
+  .h1{font-size:24px;margin:5px 0 16px;letter-spacing:-.4px}
+  .toolbar{display:flex;gap:8px}
+  .select{flex:none;width:106px;height:38px;border:1px solid var(--line);border-radius:9px;background:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12.5px;color:var(--ink)}
+  .select svg{width:12px;height:12px;stroke:var(--muted);fill:none;stroke-width:2}
+  .search{flex:1;min-width:0;height:38px;border:1px solid var(--line);border-radius:9px;background:#fff;display:flex;align-items:center;gap:7px;padding:0 10px;color:#8a968f;font-size:12px}
+  .search svg{width:14px;height:14px;stroke:#8a968f;fill:none;stroke-width:1.8;flex:none}
+  .add{margin-top:10px;width:100%;height:40px;border:0;border-radius:9px;background:linear-gradient(135deg,#3f9d8c,#2a7d6f);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 6px 14px rgba(42,125,111,.22)}
+
+  .scope-bar{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:8px;margin:12px -16px 0;padding:8px 16px;background:rgba(245,247,244,.97);backdrop-filter:blur(8px);border-bottom:1px solid transparent;transition:box-shadow .2s,border-color .2s}
+  .scope-bar.stuck{border-color:var(--line);box-shadow:0 8px 14px -10px rgba(12,40,33,.35)}
+  .scope-scroll{display:flex;gap:7px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none;-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 16px),transparent 100%);mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 16px),transparent 100%)}
+  .scope-scroll::-webkit-scrollbar{display:none}
+  .chip{flex:none;height:33px;padding:0 13px;border-radius:999px;border:1px solid var(--line);background:#fff;color:#2c3a34;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-family:inherit}
+  .chip i{font-style:normal;font-size:10.5px;color:#8b968f}
+  .chip.on{background:var(--teal-deep);border-color:var(--teal-deep);color:#fff}
+  .chip.on i{color:#a9c8bf}
+  .filter-btn{flex:none;height:33px;border-radius:9px;border:1px solid var(--line);background:#fff;color:#2c3a34;padding:0 10px;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-family:inherit;cursor:pointer}
+  .filter-btn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.8}
+
+  .card{background:#fff;border:1px solid #eceee9;border-radius:14px;padding:15px 16px 12px;box-shadow:var(--shadow);margin-top:12px}
+  .card h3{margin:0;font-size:15.5px;letter-spacing:-.2px}
+  .card .meta{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .tag{display:inline-flex;align-items:center;gap:5px;margin-top:9px;font-size:10.5px;padding:3px 9px;border-radius:999px;background:var(--teal-soft);color:#2f6f63;font-weight:600}
+  .excerpt{margin:10px 0 0;font-size:12.5px;line-height:1.75;color:#3d4b45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .updated{margin-top:10px;font-size:10.5px;color:#95a09a}
+  .actions{display:flex;gap:14px;margin-top:9px;padding-top:9px;border-top:1px dashed #edf0ec;font-size:11.5px}
+  .actions b{color:#2a7d6f;font-weight:500}
+  .actions .del{color:var(--danger)}
+  .empty{background:#fff;border:1px dashed var(--line);border-radius:14px;padding:26px;text-align:center;color:var(--muted);font-size:12px;margin-top:12px}
+
+  .backdrop{position:absolute;inset:0;background:rgba(8,26,22,.38);opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
+  .backdrop.show{opacity:1;pointer-events:auto}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:18px 18px 0 0;padding:12px 0 10px;transform:translateY(104%);transition:transform .26s cubic-bezier(.2,.8,.2,1);z-index:30;box-shadow:0 -14px 36px rgba(8,26,22,.22)}
+  .sheet.open{transform:none}
+  .sheet-head{display:flex;align-items:center;justify-content:space-between;padding:4px 18px 10px}
+  .sheet-head strong{font-size:14px}
+  .sheet-head small{font-size:11px;color:var(--muted);display:block;margin-top:3px;font-weight:400}
+  .sheet-close{width:28px;height:28px;border-radius:50%;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:15px;line-height:1;cursor:pointer}
+  .sheet-list{max-height:330px;overflow-y:auto;padding:0 8px}
+  .sheet-row{width:100%;display:flex;align-items:center;gap:10px;padding:11px 10px;border:0;background:#fff;border-radius:10px;font-family:inherit;font-size:13px;color:var(--ink);cursor:pointer;text-align:left}
+  .sheet-row:hover{background:#f6f8f5}
+  .sheet-row .n{flex:1;min-width:0}
+  .sheet-row .n small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
+  .sheet-row .cnt{font-size:11px;color:#8b968f}
+  .sheet-row.on{background:var(--teal-soft);color:#1d5b50}
+  .sheet-row.on .cnt{color:#2f6f63}
+  .check{width:16px;height:16px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;flex:none;color:transparent;font-size:10px}
+  .sheet-row.on .check{background:var(--teal);border-color:var(--teal);color:#fff}
+  .grab{width:36px;height:4px;border-radius:99px;background:#dfe5df;margin:2px auto 8px}
+
+  @media(max-width:520px){:root{--pw:342px;--ph:700px}}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="page-head">
+    <h1>复盘总结 · 移动端企业筛选</h1>
+    <p>方案 A：企业范围收成一行横向胶囊，页面滚动时吸顶；企业再多也不占正文高度。下面三个手机状态都可以点。</p>
+  </header>
+  <div class="notes">
+    <span class="note bad">改前：企业列表 <b>N 行</b>，企业越多卡片越往下</span>
+    <span class="note">改后：企业条固定 <b>一行</b>，高度 49px</span>
+    <span class="note">滚动时<b>吸顶</b>，随时切换</span>
+    <span class="note">行尾<b>筛选</b>抽屉，企业多也不怕横滑</span>
+  </div>
+
+  <div class="frames">
+    <figure>
+      <figcaption><b>① 默认</b>一屏能直接看到复盘内容</figcaption>
+      <div class="phone" data-phone="p1">
+        <div class="screen">
+          <div class="appbar">
+            <div class="brand"><span class="brand-mark">龙</span><span class="brand-name">且听龙吟</span><span class="brand-user"><span class="avatar">朱</span>朱文袆</span></div>
+            <nav class="nav"><span>持仓总览</span><span>盈亏看板</span><span>建仓跟踪</span><span>记录交易</span><span class="on">复盘总结</span></nav>
+          </div>
+          <div class="content">
+            <div class="eyebrow">LOCAL PORTFOLIO</div>
+            <div class="h1">复盘总结</div>
+            <div class="toolbar">
+              <span class="select">全部周期<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+              <span class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></svg>搜索企业或复盘内容…</span>
+            </div>
+            <button class="add">+ 新增复盘</button>
+            <div class="scope-bar"><div class="scope-scroll"></div><button class="filter-btn"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>筛选</button></div>
+            <div class="cards"></div>
+          </div>
+        </div>
+        <div class="backdrop"></div>
+        <div class="sheet"><div class="grab"></div><div class="sheet-head"><div><strong>企业范围</strong><small>选择一个企业查看它的复盘</small></div><button class="sheet-close">×</button></div><div class="sheet-list"></div></div>
+      </div>
+    </figure>
+
+    <figure>
+      <figcaption><b>② 向下滚动</b>企业条吸顶，切换不用回到顶部</figcaption>
+      <div class="phone" data-phone="p2">
+        <div class="screen">
+          <div class="appbar">
+            <div class="brand"><span class="brand-mark">龙</span><span class="brand-name">且听龙吟</span><span class="brand-user"><span class="avatar">朱</span>朱文袆</span></div>
+            <nav class="nav"><span>持仓总览</span><span>盈亏看板</span><span>建仓跟踪</span><span>记录交易</span><span class="on">复盘总结</span></nav>
+          </div>
+          <div class="content">
+            <div class="eyebrow">LOCAL PORTFOLIO</div>
+            <div class="h1">复盘总结</div>
+            <div class="toolbar">
+              <span class="select">全部周期<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+              <span class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></svg>搜索企业或复盘内容…</span>
+            </div>
+            <button class="add">+ 新增复盘</button>
+            <div class="scope-bar"><div class="scope-scroll"></div><button class="filter-btn"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>筛选</button></div>
+            <div class="cards"></div>
+          </div>
+        </div>
+        <div class="backdrop"></div>
+        <div class="sheet"><div class="grab"></div><div class="sheet-head"><div><strong>企业范围</strong><small>选择一个企业查看它的复盘</small></div><button class="sheet-close">×</button></div><div class="sheet-list"></div></div>
+      </div>
+    </figure>
+
+    <figure>
+      <figcaption><b>③ 点「筛选」</b>底部抽屉列出全部企业，选中即过滤</figcaption>
+      <div class="phone" data-phone="p3">
+        <div class="screen">
+          <div class="appbar">
+            <div class="brand"><span class="brand-mark">龙</span><span class="brand-name">且听龙吟</span><span class="brand-user"><span class="avatar">朱</span>朱文袆</span></div>
+            <nav class="nav"><span>持仓总览</span><span>盈亏看板</span><span>建仓跟踪</span><span>记录交易</span><span class="on">复盘总结</span></nav>
+          </div>
+          <div class="content">
+            <div class="eyebrow">LOCAL PORTFOLIO</div>
+            <div class="h1">复盘总结</div>
+            <div class="toolbar">
+              <span class="select">全部周期<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+              <span class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></svg>搜索企业或复盘内容…</span>
+            </div>
+            <button class="add">+ 新增复盘</button>
+            <div class="scope-bar"><div class="scope-scroll"></div><button class="filter-btn"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>筛选</button></div>
+            <div class="cards"></div>
+          </div>
+        </div>
+        <div class="backdrop"></div>
+        <div class="sheet"><div class="grab"></div><div class="sheet-head"><div><strong>企业范围</strong><small>选择一个企业查看它的复盘</small></div><button class="sheet-close">×</button></div><div class="sheet-list"></div></div>
+      </div>
+    </figure>
+  </div>
+</div>
+
+<script>
+  const companies = [
+    { id: '', name: '全部', code: '所有企业', count: 12 },
+    { id: 'catl', name: '宁德时代', code: '300750 · 深市', count: 4 },
+    { id: 'xiaomi', name: '小米集团-W', code: '01810 · 港交所', count: 3 },
+    { id: 'byd', name: '比亚迪', code: '002594 · 深市', count: 2 },
+    { id: 'tianfeng', name: '天风证券', code: '601162 · 沪市', count: 2 },
+    { id: 'cmb', name: '招商银行', code: '600036 · 沪市', count: 1 },
+  ];
+  const reviews = [
+    { co: 'xiaomi', title: '小米集团-W', excerpt: '关于小米股价预期及后续发展思考 从企业本身竞争力和当前国际环境两块分析 当前在售产品（su7、yu7、彭程…', date: '2026-10-10 21:30' },
+    { co: 'xiaomi', title: '小米集团-W', excerpt: '小米业绩预期与现状 从小米汽车的爆款思维出发 他们都…', date: '2026-10-03 18:12' },
+    { co: 'xiaomi', title: '小米集团-W', excerpt: '高端化与 IoT 毛利结构的变化，是否足以对冲汽车业务的投入周期。', date: '2026-09-18 09:40' },
+    { co: 'catl', title: '宁德时代', excerpt: '储能订单与动力电池价格战：海外产能爬坡后的单位盈利弹性测算。', date: '2026-10-09 14:05' },
+    { co: 'catl', title: '宁德时代', excerpt: '碳酸锂价格中枢下移对毛利率的影响，以及换电模式的资本开支节奏。', date: '2026-09-27 11:20' },
+    { co: 'catl', title: '宁德时代', excerpt: '观察海外客户结构变化与欧洲工厂投产进度，跟踪季度出货指引。', date: '2026-09-12 16:33' },
+    { co: 'catl', title: '宁德时代', excerpt: '技术路线（磷酸铁锂 vs 三元）在 20 万以下车型中的份额变化。', date: '2026-08-30 10:02' },
+    { co: 'byd', title: '比亚迪', excerpt: '出海与高端化双线推进，单车净利能否在价格战中守住。', date: '2026-10-06 20:18' },
+    { co: 'byd', title: '比亚迪', excerpt: 'DM-i 5.0 车型周期与渠道库存，关注年底冲量对毛利的影响。', date: '2026-09-21 13:45' },
+    { co: 'tianfeng', title: '天风证券', excerpt: '券商板块 beta 与自营弹性，成交额回升下的业绩敏感度。', date: '2026-10-07 09:15' },
+    { co: 'tianfeng', title: '天风证券', excerpt: '并购预期与股东背景变化，是否存在估值修复的催化。', date: '2026-09-15 17:28' },
+    { co: 'cmb', title: '招商银行', excerpt: '零售信贷质量与净息差见底信号，分红率提升的持续性。', date: '2026-10-02 15:00' },
+  ];
+  const esc = s => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+  function initPhone(phone, index) {
+    const state = { filter: '' };
+    const screen = phone.querySelector('.screen');
+    const bar = phone.querySelector('.scope-bar');
+    const scope = phone.querySelector('.scope-scroll');
+    const cards = phone.querySelector('.cards');
+    const sheet = phone.querySelector('.sheet');
+    const backdrop = phone.querySelector('.backdrop');
+    const list = phone.querySelector('.sheet-list');
+
+    const paint = () => {
+      scope.innerHTML = companies.map(c => `<button class="chip${c.id === state.filter ? ' on' : ''}" data-co="${c.id}">${esc(c.id ? c.name : '全部')} <i>${c.count}</i></button>`).join('');
+      const rows = reviews.filter(r => !state.filter || r.co === state.filter);
+      cards.innerHTML = rows.length ? rows.map(r => `
+        <article class="card">
+          <h3>${esc(r.title)}</h3>
+          <div class="meta">${esc((companies.find(c => c.id === r.co) || {}).code || '')}</div>
+          <span class="tag">持仓周期 终身</span>
+          <p class="excerpt">${esc(r.excerpt)}</p>
+          <div class="updated">更新于 ${r.date}</div>
+          <div class="actions"><b>查看</b><b>编辑</b><span class="del">删除</span></div>
+        </article>`).join('') : '<div class="empty">这个企业还没有复盘记录。</div>';
+      list.innerHTML = companies.map(c => `<button class="sheet-row${c.id === state.filter ? ' on' : ''}" data-co="${c.id}"><span class="check">✓</span><span class="n">${esc(c.id ? c.name : '全部企业')}<small>${esc(c.code)}</small></span><span class="cnt">${c.count} 条</span></button>`).join('');
+    };
+
+    const select = co => { state.filter = co; paint(); closeSheet(); screen.scrollTo({ top: 0, behavior: 'smooth' }); };
+    const openSheet = () => { sheet.classList.add('open'); backdrop.classList.add('show'); };
+    const closeSheet = () => { sheet.classList.remove('open'); backdrop.classList.remove('show'); };
+
+    scope.addEventListener('click', e => { const chip = e.target.closest('.chip'); if (chip) select(chip.dataset.co); });
+    list.addEventListener('click', e => { const row = e.target.closest('.sheet-row'); if (row) select(row.dataset.co); });
+    phone.querySelector('.filter-btn').addEventListener('click', openSheet);
+    phone.querySelector('.sheet-close').addEventListener('click', closeSheet);
+    backdrop.addEventListener('click', closeSheet);
+    screen.addEventListener('scroll', () => bar.classList.toggle('stuck', screen.scrollTop > 6));
+
+    paint();
+    if (index === 1) setTimeout(() => { screen.scrollTop = 210; bar.classList.add('stuck'); }, 60);
+    if (index === 2) openSheet();
+  }
+
+  document.querySelectorAll('.phone').forEach((phone, i) => initPhone(phone, i));
+</script>
+</body>
+</html>

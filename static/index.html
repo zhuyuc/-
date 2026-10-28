@@ -36,8 +36,8 @@
             <label>确认新密码<span class="field-wrap"><input name="confirm" type="password" autocomplete="new-password" required minlength="6"><button class="password-toggle" type="button" aria-label="显示密码" aria-pressed="false"><svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button></span></label>
             <button class="primary wide" type="submit">重置密码</button>
           </form>
-          <div class="auth-aux" id="auth-aux-default"><button type="button" class="auth-link" data-auth-mode="register">注册</button><span class="auth-dot">·</span><button type="button" class="auth-link" data-auth-mode="reset">找回密码</button></div>
-          <div class="auth-aux hidden" id="auth-aux-back"><button type="button" class="auth-link" data-auth-mode="login">返回登录</button></div>
+          <div class="auth-aux" id="auth-aux-default"><button type="button" class="text-action auth-link" data-auth-mode="register">注册</button><span class="auth-dot">·</span><button type="button" class="text-action auth-link" data-auth-mode="reset">找回密码</button></div>
+          <div class="auth-aux hidden" id="auth-aux-back"><button type="button" class="text-action auth-link" data-auth-mode="login">返回登录</button></div>
         </div>
       </div>
     </div>
@@ -59,9 +59,9 @@
       <header class="topbar"><div><p class="eyebrow">LOCAL PORTFOLIO</p><h1 id="page-title">持仓总览</h1></div><div class="top-actions"><button class="secondary" id="open-tplan-btn">做T测算</button><button class="secondary" id="open-tplans-btn">做T记录</button><span id="last-sync" class="sync-state">尚未更新行情</span><button id="refresh-btn" class="primary">更新行情</button></div><div class="top-actions trade-tools hidden" id="trade-tools-bar"><button class="secondary" id="open-history-btn">交易记录</button></div><div class="top-actions review-tools hidden" id="review-tools-bar"><span class="review-period-wrap"><select id="review-period" aria-label="持仓周期筛选"><option value="">全部周期</option><option value="short">短期 · 1月左右</option><option value="medium">中期 · 3月左右</option><option value="long">长期 · 2年左右</option><option value="forever">终身</option></select><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></span><span class="review-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg><input id="review-filter" placeholder="搜索企业或复盘内容…"></span><button class="primary" id="open-review-btn">＋ 新增复盘</button></div></header>
 
       <section id="page-overview" class="page active-page">
-        <div class="summary-grid"><article class="summary-card"><span>账户金额</span><strong id="cash-balances" class="multi">--</strong><div class="cash-card-actions"><button class="text-button" id="cash-manage" type="button">入金 / 出金</button><button class="text-button" id="cash-history" type="button">明细</button></div></article><article class="summary-card"><span>持仓金额</span><strong id="total-value">--</strong><small>按币种分别统计</small></article><article class="summary-card"><span>累计已实现盈亏</span><strong id="realized-pnl">--</strong><small id="realized-note">已扣除交易费用</small></article><article class="summary-card"><span>浮动盈亏</span><strong id="unrealized-pnl">--</strong><small>不含已实现盈亏</small></article><article class="summary-card"><span>持仓数量</span><strong id="holding-count">0</strong><small>只统计当前有持仓股票</small></article></div>
+        <div class="summary-grid"><article class="summary-card"><span>账户金额</span><strong id="cash-balances" class="multi">--</strong><div class="cash-card-actions"><button class="text-action" id="cash-manage" type="button">入金 / 出金</button><button class="text-action" id="cash-history" type="button">明细</button></div></article><article class="summary-card"><span>持仓金额</span><strong id="total-value">--</strong><small>按币种分别统计</small></article><article class="summary-card"><span>累计已实现盈亏</span><strong id="realized-pnl">--</strong><small id="realized-note">已扣除交易费用</small></article><article class="summary-card"><span>浮动盈亏</span><strong id="unrealized-pnl">--</strong><small>不含已实现盈亏</small></article><article class="summary-card"><span>持仓数量</span><strong id="holding-count">0</strong><small>只统计当前有持仓股票</small></article></div>
         <section class="panel holdings-panel">
-          <div class="panel-head"><h2>当前持仓</h2><button class="text-button" data-go="trade">记录一笔交易</button></div>
+          <div class="panel-head"><h2>当前持仓</h2><button class="text-action" data-go="trade">记录一笔交易</button></div>
           <div id="holdings-container" class="holdings-stack"><div class="empty-state">正在加载持仓…</div></div>
         </section>
         <section class="panel chart-panel">
@@ -107,6 +107,7 @@
             <div id="fee-preview" class="preview-funds"></div>
             <div class="preview-pay"><span>实际收付</span><strong id="preview-pay">--</strong></div>
             <div class="preview-after"><span>成交后账户金额</span><span id="preview-after">--</span></div>
+            <div class="preview-after"><span>成交后持仓成本</span><span id="preview-cost">--</span></div>
             <button class="primary preview-save" type="submit" form="trade-form">保存交易</button>
           </aside>
         </div>
@@ -127,13 +128,17 @@
   <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
     <div class="modal-panel wide">
       <div class="modal-head"><div><h2 id="settings-modal-title">设置</h2><p>费用规则与成本算法，修改只影响之后保存的交易。</p></div><button id="settings-close" class="modal-close" type="button" aria-label="关闭设置">×</button></div>
-      <div class="modal-body"><div class="fee-actions"><label class="method-control">成本算法<select id="cost-method"><option value="moving_average">移动加权平均</option><option value="fifo">先进先出（FIFO）</option><option value="diluted">摊薄成本（每次卖出后成本下降）</option></select></label><button id="save-cost-method" class="secondary">保存算法</button><button id="save-fees-btn" class="primary">保存规则</button></div><div class="notice">费用可以设置为 0、固定金额或按成交金额比例。规则会在保存交易时写入该笔成交的费用记录。成本算法只影响已实现与未实现盈亏的分配，不改变成交额和实际费用。</div><div id="fee-rules-container" class="fee-rules-stack"></div></div>
+      <div class="modal-body"><div class="fee-actions"><label class="method-control">成本算法<select id="cost-method"><option value="moving_average">移动加权平均</option><option value="fifo">先进先出（FIFO）</option><option value="diluted">摊薄成本（每次卖出后成本下降）</option></select></label><button id="save-settings" class="primary">保存设置</button></div><div class="notice">费用可以设置为 0、固定金额或按成交金额比例。规则会在保存交易时写入该笔成交的费用记录。成本算法只影响已实现与未实现盈亏的分配，不改变成交额和实际费用。</div><div id="fee-rules-container" class="fee-rules-stack"></div></div>
     </div>
   </div>
   <div id="audit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="audit-modal-title">
     <div class="modal-panel wide">
-      <div class="modal-head"><div><h2 id="audit-modal-title">操作日志</h2><p>本账号的操作记录，只读。</p></div><button id="audit-close" class="modal-close" type="button" aria-label="关闭操作日志">×</button></div>
-      <div class="modal-body"><div id="audit-log-list" class="audit-list"><div class="muted">加载中…</div></div><div id="audit-pager" class="audit-pager hidden"><button id="audit-prev" class="text-button" type="button">上一页</button><span id="audit-page-info"></span><button id="audit-next" class="text-button" type="button">下一页</button></div></div>
+      <div class="modal-head"><div><h2 id="audit-modal-title">操作日志</h2><p id="audit-actor">操作人：-</p></div><button id="audit-close" class="modal-close" type="button" aria-label="关闭操作日志">×</button></div>
+      <div class="modal-body audit-body">
+        <div class="audit-toolbar"><label class="audit-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg><input id="audit-search" placeholder="搜索动作或内容…" autocomplete="off"></label><div id="audit-menus" class="audit-menus"></div></div>
+        <div class="audit-scroll"><div class="audit-thead"><span>时间</span><span>菜单</span><span>事情描述</span></div><div id="audit-log-list"></div></div>
+      </div>
+      <div class="modal-foot audit-foot"><span id="audit-page-info" class="muted"></span><div class="audit-pager"><button id="audit-prev" type="button">上一页</button><button id="audit-next" type="button">下一页</button></div></div>
     </div>
   </div>
   <div id="history-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
@@ -244,20 +249,17 @@
   </div>
   <div id="tfeedback-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="tfeedback-modal-title">
     <div class="modal-panel medium">
-      <div class="modal-head"><div><h2 id="tfeedback-modal-title">回填执行</h2><p>录入实际成交价，并关联这次做T的两笔成交</p></div><button id="tfeedback-close" class="modal-close" type="button" aria-label="关闭回填">×</button></div>
+      <div class="modal-head"><div><h2 id="tfeedback-modal-title">回填执行</h2><p>关联买入与卖出两笔成交，关联齐即完成回填</p></div><button id="tfeedback-close" class="modal-close" type="button" aria-label="关闭回填">×</button></div>
       <div class="modal-body tfeedback-body"><div class="tfeedback-grid">
         <div class="tfeedback-form">
           <div class="tfeedback-summary"><strong id="tfeedback-summary"></strong><small id="tfeedback-summary-meta"></small><div class="tfeedback-sumgrid"><div><span id="tfeedback-known-label">已知交易单价</span><strong id="tfeedback-known-price"></strong></div><div><span>数量</span><strong id="tfeedback-qty"></strong></div><div><span id="tfeedback-predict-price-label">回补价</span><strong id="tfeedback-predict-price"></strong></div><div><span>计划净收益</span><strong id="tfeedback-target"></strong></div></div></div>
-          <div class="tfeedback-step"><i>1</i><h3>实际成交</h3></div>
-          <label class="tfeedback-field"><span class="tfeedback-label">实际成交单价（每股）</span><span class="field-wrap"><input id="tfeedback-price" type="number" min="0.000001" step="any"><span class="field-currency" id="tfeedback-currency">人民币</span></span></label>
-          <label class="tfeedback-field"><span class="tfeedback-label">备注<em>可选</em></span><input id="tfeedback-note" placeholder="可选"></label>
-          <div class="tfeedback-sep"></div>
-          <div class="tfeedback-step"><i>2</i><h3>关联成交</h3></div>
+          <div class="tfeedback-step"><i>1</i><h3>关联成交</h3></div>
           <div class="tfeedback-legs"><div class="tfeedback-leg"><div class="tfeedback-leg-head"><div><strong id="tfeedback-known-side"></strong><span> · 计划价 <b id="tfeedback-known-leg-price"></b></span></div><span class="tfeedback-leg-status" id="tfeedback-known-status">未关联</span></div><div id="tfeedback-known-actions" class="tfeedback-leg-actions"></div></div><div class="tfeedback-leg"><div class="tfeedback-leg-head"><div><strong id="tfeedback-target-side"></strong><span> · 计划价 <b id="tfeedback-target-leg-price"></b></span></div><span class="tfeedback-leg-status" id="tfeedback-target-status">未关联</span></div><div id="tfeedback-target-actions" class="tfeedback-leg-actions"></div></div></div>
+          <p id="tfeedback-link-hint" class="tfeedback-hint muted">关联买入与卖出两笔成交后自动完成回填。</p>
         </div>
-        <aside class="tfeedback-preview"><div class="tfeedback-preview-head"><h3>回填预览</h3><span class="tfeedback-badge">待回填</span></div><div class="tfeedback-big"><span>实际净收益</span><strong id="tfeedback-actual-net">--</strong><small id="tfeedback-net-rate">--</small></div><div class="tfeedback-pgrid"><div><span>与目标差额</span><strong id="tfeedback-delta">--</strong></div><div><span>较预测单价</span><strong id="tfeedback-price-delta">--</strong></div><div><span>实际成交金额</span><strong id="tfeedback-actual-gross">--</strong></div><div><span>往返费用率</span><strong id="tfeedback-fee-rate">--</strong></div></div><p class="tfeedback-pnote">成本变化在保存后的做T明细里按实际成交计算，这里不重复展示按计划价推演的成本。</p></aside>
+        <aside class="tfeedback-preview"><div class="tfeedback-preview-head"><h3>回填结果</h3><span class="tfeedback-badge" id="tfeedback-badge">待回填</span></div><div class="tfeedback-big"><span>实际净收益</span><strong id="tfeedback-actual-net">--</strong><small id="tfeedback-net-rate">--</small></div><div class="tfeedback-pgrid"><div><span>与目标差额</span><strong id="tfeedback-delta">--</strong></div><div><span>较预测单价</span><strong id="tfeedback-price-delta">--</strong></div><div><span>实际成交金额</span><strong id="tfeedback-actual-gross">--</strong></div><div><span>往返费用率</span><strong id="tfeedback-fee-rate">--</strong></div></div><p class="tfeedback-pnote">成本变化在关联完成后的做T明细里按实际成交计算，这里不重复展示按计划价推演的成本。</p></aside>
       </div></div>
-      <div class="modal-foot tfeedback-foot"><button class="secondary" id="tfeedback-cancel" type="button">取消</button><button class="primary" id="tfeedback-save" type="button">保存回填</button></div>
+      <div class="modal-foot tfeedback-foot"><button class="secondary" id="tfeedback-cancel" type="button">关闭</button></div>
     </div>
   </div>
   <div id="cash-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cash-modal-title">

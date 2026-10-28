@@ -93,7 +93,6 @@ ROUTE_WATCH_NOTE_RE = re.compile(r"^/api/watch/(?P<id>\d+)/notes/(?P<note_id>\d+
 ROUTE_CASH_ENTRY_RE = re.compile(r"^/api/cash/entries/(?P<id>\d+)$")
 ROUTE_PLAN_LINK_RE = re.compile(r"^/api/t-plans/(?P<id>\d+)/link$")
 ROUTE_PLAN_EDIT_RE = re.compile(r"^/api/t-plans/(?P<id>\d+)/edit$")
-ROUTE_PLAN_TRADES_RE = re.compile(r"^/api/t-plans/(?P<id>\d+)/trades$")
 ROUTE_PLAN_CANDIDATES_RE = re.compile(r"^/api/t-plans/(?P<id>\d+)/candidates$")
 
 SETTINGS_KEYS = ("cost_method",)
@@ -260,7 +259,7 @@ def managed_connect(path: Path):
         conn.close()
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = []
 
 
@@ -395,6 +394,14 @@ def migrate_t_plan_links(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_t_plan_links_plan ON t_plan_links(plan_id);
         """
     )
+
+
+@migration(8)
+def migrate_fee_waived(conn: sqlite3.Connection) -> None:
+    """费用项目可单独标记「不收费」：保留费率与规则，只按 0 计。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(fee_rules)")}
+    if "waived" not in columns:
+        conn.execute("ALTER TABLE fee_rules ADD COLUMN waived INTEGER NOT NULL DEFAULT 0")
 
 
 PLAN_KNOWN_SIDES = {"buy_first": "buy", "sell_first": "sell"}
@@ -1369,7 +1376,12 @@ def calculate_fees(conn: sqlite3.Connection, market: str, side: str, gross: Deci
         minimum = decimal(row["min_fee"], DECIMAL_ZERO)
         maximum = decimal(row["max_fee"], DECIMAL_ZERO)
         included = bool(row["included"])
-        if included or calc_type == "zero":
+        waived = bool(row["waived"]) if "waived" in row.keys() else False
+        if waived:
+            amount = DECIMAL_ZERO
+            status = "not_charged"
+            formula = "未收取"
+        elif included or calc_type == "zero":
             amount = DECIMAL_ZERO
             status = "included" if included else "not_charged"
             formula = "已包含在佣金中" if included else "未收取"
@@ -1411,6 +1423,10 @@ def solve_round_trip(conn: sqlite3.Connection, security: sqlite3.Row, direction:
     market = market_from_security(security)
     known_side = "buy" if direction == "buy_first" else "sell"
     other_side = "sell" if known_side == "buy" else "buy"
+    if known_side == "sell":
+        qty_now = recalculate_security(conn, security["security_id"], persist=False)[0]
+        if qty > qty_now:
+            raise AppError(f"做T卖出数量超过当前持仓（可卖 {quantity_text(qty_now)}）")
     known_lines = calculate_fees(conn, market, known_side, known_gross, qty)
     known_fees = sum((decimal(line["amount"]) for line in known_lines), DECIMAL_ZERO)
     if known_side == "buy":
@@ -1513,14 +1529,14 @@ def project_cost_after_round_trip(
     known_gross: Decimal, known_fees: Decimal, solved_gross: Decimal, solved_fees: Decimal,
     skip_legs: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """按当前成本口径推演做T后的每股成本；已关联成交的腿已反映在持仓里，传入 skip_legs 避免重复计入。"""
+    """按当前成本口径推演做T后的每股成本：已知腿视为你已持有（持仓已含），只推演目标腿；目标腿若已关联真实成交则同样不重复计入。"""
     method = cost_method(conn)
     qty_now, remaining, _realized, lots, _invested = recalculate_security(conn, security_id, persist=False)
     state: dict[str, Any] = {"qty": qty_now, "remaining": remaining, "lots": [dict(lot) for lot in lots]}
     skip = set(skip_legs)
     legs = (("known", "buy", known_gross, known_fees), ("target", "sell", solved_gross, solved_fees)) if direction == "buy_first" else (("known", "sell", known_gross, known_fees), ("target", "buy", solved_gross, solved_fees))
     for leg, side, gross, fees in legs:
-        if leg in skip:
+        if leg == "known" or leg in skip:
             continue
         _apply_leg(state, side, qty, gross, fees, method)
     before = remaining / qty_now if qty_now > 0 else None
@@ -1531,6 +1547,48 @@ def project_cost_after_round_trip(
         "unit_before": price_text(before) if before is not None else None,
         "unit_after": price_text(after) if after is not None else None,
     }
+
+
+def plan_skip_legs(conn: sqlite3.Connection, plan_id: int, direction: str, qty: Decimal) -> set[str]:
+    """目标腿若已关联真实成交（数量匹配），其成交已在持仓里，推演不再重复计入；已知腿一律视为已持有。"""
+    skip: set[str] = set()
+    for link in conn.execute(
+        "SELECT l.leg, t.quantity AS trade_quantity FROM t_plan_links l JOIN trades t ON t.id = l.trade_id WHERE l.plan_id = ?",
+        (plan_id,),
+    ).fetchall():
+        if link["leg"] == "target" and decimal(link["trade_quantity"]) == qty:
+            skip.add("target")
+    return skip
+
+
+def close_plan_from_links(conn: sqlite3.Connection, plan: sqlite3.Row, links: dict[str, sqlite3.Row] | None = None, stamp: str | None = None) -> sqlite3.Row:
+    """两腿都关联到真实成交后，直接用两笔成交的快照回填并关闭计划。"""
+    links = links if links is not None else plan_links_map(conn, plan["id"])
+    known, target = links.get("known"), links.get("target")
+    if known is None or target is None:
+        return plan
+    actual_gross, actual_fees = decimal(target["gross_amount"]), decimal(target["fee_total"])
+    known_gross, known_fees = decimal(known["gross_amount"]), decimal(known["fee_total"])
+    if plan["direction"] == "buy_first":
+        actual_net = (actual_gross - actual_fees) - (known_gross + known_fees)
+    else:
+        actual_net = (known_gross - known_fees) - (actual_gross + actual_fees)
+    stamp = stamp or now_iso()
+    conn.execute(
+        "UPDATE t_plans SET status='closed', executed=1, actual_unit_price=?, actual_gross=?, actual_fees=?, actual_net=?, closed_at=? WHERE id=?",
+        (price_text(decimal(target["unit_price"])), money(actual_gross), money(actual_fees), money(actual_net), stamp, plan["id"]),
+    )
+    conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_close', ?, ?)", (json.dumps({"plan_id": plan["id"], "executed": 1}, ensure_ascii=False), stamp))
+    return conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan["id"],)).fetchone()
+
+
+def reopen_plan(conn: sqlite3.Connection, plan_id: int, stamp: str | None = None) -> None:
+    """解除关联/作废成交后计划不再完整，退回进行中并清空实际值。"""
+    conn.execute(
+        "UPDATE t_plans SET status='open', executed=NULL, actual_unit_price=NULL, actual_gross=NULL, actual_fees=NULL, actual_net=NULL, closed_at=NULL WHERE id = ?",
+        (plan_id,),
+    )
+    conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_reopen', ?, ?)", (json.dumps({"plan_id": plan_id}, ensure_ascii=False), stamp or now_iso()))
 
 
 def plan_row_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1546,6 +1604,45 @@ def plan_row_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 AUDIT_DIRECTION_LABELS = {"buy_first": "先买后卖", "sell_first": "先卖后买"}
 AUDIT_COST_METHOD_LABELS = {"moving_average": "移动加权平均", "fifo": "先进先出（FIFO）", "diluted": "摊薄成本"}
+
+AUDIT_MENU_ORDER = ("overview", "trade", "watch", "review", "settings", "other")
+AUDIT_MENU_LABELS = {
+    "overview": "持仓总览",
+    "trade": "记录交易",
+    "watch": "建仓跟踪",
+    "review": "复盘总结",
+    "settings": "设置",
+    "other": "其他",
+}
+AUDIT_ACTION_META = {
+    "trade_create": ("trade", "新增交易"),
+    "trade_void": ("trade", "作废交易"),
+    "t_plan_create": ("overview", "记录做T测算"),
+    "t_plan_update": ("overview", "修改做T测算"),
+    "t_plan_delete": ("overview", "删除做T记录"),
+    "t_plan_link": ("overview", "关联做T成交"),
+    "t_plan_unlink": ("overview", "解除做T关联"),
+    "t_plan_close": ("overview", "做T回填"),
+    "t_plan_reopen": ("overview", "做T计划恢复"),
+    "cash_entry_create": ("overview", "入金 / 出金"),
+    "cash_entry_delete": ("overview", "撤销资金记录"),
+    "watch_create": ("watch", "新增关注"),
+    "watch_update": ("watch", "修改关注"),
+    "watch_remove": ("watch", "移除关注"),
+    "watch_note_create": ("watch", "新增跟进"),
+    "watch_note_update": ("watch", "修改跟进"),
+    "watch_note_delete": ("watch", "删除跟进"),
+    "review_create": ("review", "新增复盘"),
+    "review_update": ("review", "修改复盘"),
+    "review_delete": ("review", "删除复盘"),
+    "settings_update": ("settings", "修改成本算法"),
+    "password_reset": ("settings", "重置密码"),
+}
+
+
+def audit_action_meta(action: str) -> tuple[str, str, str]:
+    menu, label = AUDIT_ACTION_META.get(action, ("other", action))
+    return menu, AUDIT_MENU_LABELS[menu], label
 
 
 def _audit_excerpt(text: Any, limit: int = 24) -> str:
@@ -2267,11 +2364,10 @@ class TradingHandler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/audit-logs":
                 limit, offset = page_args(query)
-                total = conn.execute("SELECT COUNT(*) AS n FROM audit_logs").fetchone()["n"]
-                rows = conn.execute(
-                    "SELECT id, action, detail, created_at FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                ).fetchall()
+                menu_filter = query.get("menu", [""])[0]
+                keyword = query.get("q", [""])[0].strip().lower()
+                rows = conn.execute("SELECT id, action, detail, created_at FROM audit_logs ORDER BY created_at DESC, id DESC").fetchall()
+                menus: dict[str, dict[str, Any]] = {}
                 logs = []
                 for row in rows:
                     item = dict(row)
@@ -2280,8 +2376,19 @@ class TradingHandler(BaseHTTPRequestHandler):
                     except json.JSONDecodeError:
                         item["detail"] = {"raw": item["detail"]}
                     item["summary"] = audit_log_summary(conn, item["action"], item["detail"])
+                    menu, menu_label, action_label = audit_action_meta(item["action"])
+                    item.update(menu=menu, menu_label=menu_label, action_label=action_label)
+                    bucket = menus.setdefault(menu, {"menu": menu, "menu_label": menu_label, "count": 0})
+                    bucket["count"] += 1
+                    if menu_filter and menu != menu_filter:
+                        continue
+                    haystack = f"{action_label} {item['summary']} {item['action']}".lower()
+                    if keyword and keyword not in haystack:
+                        continue
                     logs.append(item)
-                self._send({"ok": True, "logs": logs, "total": total, "limit": limit, "offset": offset})
+                menu_list = [menus[menu] for menu in AUDIT_MENU_ORDER if menu in menus]
+                page_logs = logs[offset:offset + limit]
+                self._send({"ok": True, "logs": page_logs, "total": len(logs), "limit": limit, "offset": offset, "menus": menu_list})
             else:
                 raise AppError("接口不存在", 404)
         except Exception as exc:
@@ -2365,7 +2472,6 @@ class TradingHandler(BaseHTTPRequestHandler):
             notes_route = match_route(ROUTE_WATCH_NOTES_RE, path)
             plan_link_route = match_route(ROUTE_PLAN_LINK_RE, path)
             plan_edit_route = match_route(ROUTE_PLAN_EDIT_RE, path)
-            plan_trades_route = match_route(ROUTE_PLAN_TRADES_RE, path)
             if path == "/api/trades":
                 self._create_trade(conn, body)
             elif path == "/api/cash/entries":
@@ -2448,11 +2554,27 @@ class TradingHandler(BaseHTTPRequestHandler):
                     raise AppError(str(exc)) from exc
                 if qty <= 0 or known_gross <= 0 or target_value < 0:
                     raise AppError("数量与金额必须大于 0，目标不能为负")
+                skip_legs: set[str] = set()
+                raw_plan_id = body.get("plan_id")
+                if raw_plan_id not in (None, ""):
+                    try:
+                        edit_plan_id = int(raw_plan_id)
+                    except (TypeError, ValueError) as exc:
+                        raise AppError("计划编号无效") from exc
+                    edit_plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (edit_plan_id,)).fetchone()
+                    if edit_plan is None:
+                        raise AppError("计划不存在", 404)
+                    if edit_plan["status"] != "open":
+                        raise AppError("仅进行中的计划可以修改")
+                    if edit_plan["security_id"] != security_id or edit_plan["direction"] != direction:
+                        raise AppError("股票与方向不可修改")
+                    skip_legs = plan_skip_legs(conn, edit_plan_id, direction, qty)
                 solved = solve_round_trip(conn, security, direction, qty, known_gross, target_type, target_value)
                 # 金额/目标价维度的目标值以取整后的可成交价为准，避免计划里价格与金额对不上
                 stored_target_value = target_value if target_type == "percent" else solved["solved_unit_price"]
                 cost_after = project_cost_after_round_trip(
                     conn, security_id, direction, qty, known_gross, solved["known_fees"], solved["solved_gross"], solved["other_fees"],
+                    skip_legs=skip_legs,
                 )
                 stamp = now_iso()
                 plan_id = None
@@ -2519,46 +2641,13 @@ class TradingHandler(BaseHTTPRequestHandler):
                 stamp = now_iso()
                 conn.execute("INSERT INTO t_plan_links(plan_id, trade_id, leg, linked_at) VALUES (?, ?, ?, ?)", (plan_id, trade_id, leg, stamp))
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_link', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": trade_id, "leg": leg}, ensure_ascii=False), stamp))
+                links_now = plan_links_map(conn, plan_id)
+                if links_now.get("known") is not None and links_now.get("target") is not None:
+                    close_plan_from_links(conn, plan, links_now, stamp)
                 conn.commit()
                 row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
                 payload = plan_payload_with_links(conn, row)
                 self._send({"ok": True, "leg": leg, "plan": payload})
-            elif plan_trades_route:
-                plan_id = route_id(plan_trades_route, "计划")
-                plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
-                if plan is None:
-                    raise AppError("计划不存在", 404)
-                if plan["status"] != "open":
-                    raise AppError("该计划已完成，不能再补录成交")
-                leg = str(body.get("leg", "")).strip()
-                if leg not in ("known", "target"):
-                    raise AppError("参数无效")
-                if leg in plan_links_map(conn, plan_id):
-                    raise AppError("已关联过成交，请先解除")
-                security = get_security(conn, plan["security_id"])
-                if security is None:
-                    raise AppError("股票不存在")
-                try:
-                    unit = decimal(body.get("unit_price"), plan_leg_unit_price(plan, leg))
-                except ValueError as exc:
-                    raise AppError(str(exc)) from exc
-                if unit <= 0:
-                    raise AppError("成交单价必须大于 0")
-                qty = decimal(plan["quantity"])
-                trade_date = str(body.get("trade_date") or today_iso())
-                try:
-                    datetime.fromisoformat(trade_date)
-                except ValueError as exc:
-                    raise AppError("成交日期无效") from exc
-                trade_id, details = insert_trade_record(conn, security, plan_leg_side(plan["direction"], leg), qty, unit * qty, unit, trade_date)
-                stamp = now_iso()
-                conn.execute("INSERT INTO t_plan_links(plan_id, trade_id, leg, linked_at) VALUES (?, ?, ?, ?)", (plan_id, trade_id, leg, stamp))
-                conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_link', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": trade_id, "leg": leg}, ensure_ascii=False), stamp))
-                conn.commit()
-                trade = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
-                row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
-                payload = plan_payload_with_links(conn, row)
-                self._send({"ok": True, "trade": dict(trade), "fees": details, "plan": payload}, 201)
             elif plan_edit_route:
                 plan_id = route_id(plan_edit_route, "计划")
                 plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
@@ -2586,16 +2675,7 @@ class TradingHandler(BaseHTTPRequestHandler):
                     raise AppError("数量与金额必须大于 0，目标不能为负")
                 solved = solve_round_trip(conn, security, plan["direction"], qty, known_gross, target_type, target_value)
                 stored_target_value = target_value if target_type == "percent" else solved["solved_unit_price"]
-                known_side = "buy" if plan["direction"] == "buy_first" else "sell"
-                linked_legs = set()
-                for link in conn.execute(
-                    "SELECT l.leg, t.quantity AS trade_quantity, t.side AS trade_side FROM t_plan_links l JOIN trades t ON t.id = l.trade_id WHERE l.plan_id = ?",
-                    (plan_id,),
-                ).fetchall():
-                    # 数量/方向不再匹配的已知腿会在保存时解除关联，届时按未成交处理
-                    if link["leg"] == "known" and not (link["trade_side"] == known_side and decimal(link["trade_quantity"]) == qty):
-                        continue
-                    linked_legs.add(link["leg"])
+                linked_legs = plan_skip_legs(conn, plan_id, plan["direction"], qty)
                 cost_after = project_cost_after_round_trip(
                     conn, plan["security_id"], plan["direction"], qty, known_gross, solved["known_fees"], solved["solved_gross"], solved["other_fees"],
                     skip_legs=linked_legs,
@@ -2610,6 +2690,7 @@ class TradingHandler(BaseHTTPRequestHandler):
                      money(solved["target_amount"]), cost_after["unit_before"], cost_after["unit_after"], plan_id),
                 )
                 unlinked = False
+                known_side = "buy" if plan["direction"] == "buy_first" else "sell"
                 for link in conn.execute(
                     "SELECT l.id, l.trade_id, l.leg, t.quantity AS trade_quantity, t.side AS trade_side FROM t_plan_links l JOIN trades t ON t.id = l.trade_id WHERE l.plan_id = ?",
                     (plan_id,),
@@ -2816,10 +2897,10 @@ class TradingHandler(BaseHTTPRequestHandler):
                         fixed_amount = item.get("fixed_amount", item.get("amount", "0"))
                         min_fee = item.get("min_fee", item.get("minimum", "0"))
                         conn.execute(
-                            """INSERT INTO fee_rules(market, side, name, calc_type, rate, fixed_amount, min_fee, max_fee, rounding, included, enabled)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                               ON CONFLICT(market, side, name) DO UPDATE SET calc_type=excluded.calc_type, rate=excluded.rate, fixed_amount=excluded.fixed_amount, min_fee=excluded.min_fee, max_fee=excluded.max_fee, rounding=excluded.rounding, included=excluded.included, enabled=1""",
-                            (target_market, item["side"], item["name"], calc_type, nonneg(item.get("rate", "0")), nonneg(fixed_amount), nonneg(min_fee), nonneg(item.get("max_fee", "0")), item.get("rounding", "cent"), 1 if included else 0),
+                            """INSERT INTO fee_rules(market, side, name, calc_type, rate, fixed_amount, min_fee, max_fee, rounding, included, waived, enabled)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                               ON CONFLICT(market, side, name) DO UPDATE SET calc_type=excluded.calc_type, rate=excluded.rate, fixed_amount=excluded.fixed_amount, min_fee=excluded.min_fee, max_fee=excluded.max_fee, rounding=excluded.rounding, included=excluded.included, waived=excluded.waived, enabled=1""",
+                            (target_market, item["side"], item["name"], calc_type, nonneg(item.get("rate", "0")), nonneg(fixed_amount), nonneg(min_fee), nonneg(item.get("max_fee", "0")), item.get("rounding", "cent"), 1 if included else 0, 1 if item.get("waived") else 0),
                         )
                 conn.commit()
                 response_market = "a" if len(markets) > 1 else markets[0]
@@ -2836,45 +2917,6 @@ class TradingHandler(BaseHTTPRequestHandler):
                 self._send({"ok": True, "review": self._save_review(conn, body, route_id(single, "复盘"))})
             elif resource == "watch":
                 self._send({"ok": True, "item": self._save_watch(conn, body, route_id(single, "关注"))})
-            elif resource == "t-plans":
-                plan_id = route_id(single, "计划")
-                plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
-                if not plan:
-                    raise AppError("计划不存在", 404)
-                if plan["status"] == "closed":
-                    raise AppError("该计划已回填，不能重复修改")
-                note = str(body.get("note", "")).strip()
-                stamp = now_iso()
-                if not body.get("executed"):
-                    raise AppError("回填必须录入实际成交价")
-                try:
-                    actual_price = decimal(body.get("actual_unit_price"))
-                except ValueError as exc:
-                    raise AppError(str(exc)) from exc
-                if actual_price <= 0:
-                    raise AppError("实际成交价必须大于 0")
-                security = get_security(conn, plan["security_id"])
-                qty = decimal(plan["quantity"])
-                actual_gross = actual_price * qty
-                other_side = "sell" if plan["direction"] == "buy_first" else "buy"
-                actual_fees = _fee_total(conn, market_from_security(security), other_side, actual_gross, qty)
-                known_link = plan_links_map(conn, plan_id).get("known")
-                if known_link is not None:
-                    known_gross, known_fees = decimal(known_link["gross_amount"]), decimal(known_link["fee_total"])
-                else:
-                    known_gross, known_fees = decimal(plan["known_gross"]), decimal(plan["known_fees"])
-                if plan["direction"] == "buy_first":
-                    actual_net = (actual_gross - actual_fees) - (known_gross + known_fees)
-                else:
-                    actual_net = (known_gross - known_fees) - (actual_gross + actual_fees)
-                conn.execute(
-                    "UPDATE t_plans SET status='closed', executed=1, actual_unit_price=?, actual_gross=?, actual_fees=?, actual_net=?, note=?, closed_at=? WHERE id=?",
-                    (money(actual_price), money(actual_gross), money(actual_fees), money(actual_net), note, stamp, plan_id),
-                )
-                conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_close', ?, ?)", (json.dumps({"plan_id": plan_id, "executed": 1}, ensure_ascii=False), stamp))
-                conn.commit()
-                row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
-                self._send({"ok": True, "plan": plan_row_dict(row)})
             else:
                 raise AppError("接口不存在", 404)
         except Exception as exc:
@@ -2905,6 +2947,9 @@ class TradingHandler(BaseHTTPRequestHandler):
                     raise AppError("没有关联可解除", 404)
                 conn.execute("DELETE FROM t_plan_links WHERE id = ?", (link["id"],))
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_unlink', ?, ?)", (json.dumps({"plan_id": plan_id, "trade_id": link["trade_id"], "leg": leg}, ensure_ascii=False), now_iso()))
+                plan_row = conn.execute("SELECT * FROM t_plans WHERE id = ?", (plan_id,)).fetchone()
+                if plan_row is not None and plan_row["status"] == "closed":
+                    reopen_plan(conn, plan_id)
                 conn.commit()
                 row = conn.execute("SELECT p.*, s.code AS code, s.name AS name, s.exchange AS exchange, s.currency AS currency FROM t_plans p JOIN securities s ON s.security_id = p.security_id WHERE p.id = ?", (plan_id,)).fetchone()
                 payload = plan_payload_with_links(conn, row)
@@ -2940,6 +2985,9 @@ class TradingHandler(BaseHTTPRequestHandler):
                 if link:
                     conn.execute("DELETE FROM t_plan_links WHERE id = ?", (link["id"],))
                     conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('t_plan_unlink', ?, ?)", (json.dumps({"plan_id": link["plan_id"], "trade_id": trade_id, "leg": link["leg"], "trade_void": True}, ensure_ascii=False), now_iso()))
+                    linked_plan = conn.execute("SELECT * FROM t_plans WHERE id = ?", (link["plan_id"],)).fetchone()
+                    if linked_plan is not None and linked_plan["status"] == "closed":
+                        reopen_plan(conn, link["plan_id"])
                 conn.execute("INSERT INTO audit_logs(action, detail, created_at) VALUES ('trade_void', ?, ?)", (json.dumps({"trade_id": trade_id}), now_iso()))
                 conn.commit()
                 self._send({"ok": True, "id": trade_id, "voided": True})

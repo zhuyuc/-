@@ -4,6 +4,9 @@ const state = {
   trades: [],
   expandedFees: new Set(),
   auditPage: 1,
+  auditMenu: '',
+  auditQuery: '',
+  auditMenuSignature: '',
   reviewScope: 'all',
   selectedSecurity: null,
   market: 'all',
@@ -299,7 +302,7 @@ async function syncPrices(options = {}) {
   } else {
     markSyncState(`${result.updated > 0 ? '已更新' : '已检查'} ${syncStamp()}`, false);
   }
-  if (skipped.length && !result?.degraded && !quiet) toast(`${skipped.map(m => m === 'hk' ? '港股' : 'A 股').join('、')}暂无今日行情，沿用最近保存价`);
+  if (skipped.length && !result?.degraded && !quiet) toast(`${skipped.map(m => m === 'hk' ? '港股' : 'A股').join('、')}当前时段暂无交易，沿用最近交易价`);
   return result;
 }
 
@@ -309,11 +312,13 @@ async function loadDashboard() {
   try {
     const [portfolio, trades, cash] = await Promise.all([request('/api/portfolio'), request(tradesUrl(0)), request('/api/cash')]);
     state.holdings = asArray(portfolio, ['holdings', 'positions', 'items']);
+    syncSellAvailability();
     state.trades = asArray(trades, ['trades', 'items']);
     state.tradesPage.total = Number(trades.total ?? state.trades.length);
     state.tradesPage.offset = state.trades.length;
     applyCash(cash);
     renderOverview(portfolio);
+    state.costMethod = portfolio?.cost_method || state.costMethod || 'moving_average';
     if (portfolio?.cost_method) $('#cost-method').value = portfolio.cost_method;
   } catch (error) {
     toast(error.message, true);
@@ -347,6 +352,7 @@ function applyCash(data) {
   state.cashStartedAt = data?.started_at || null;
   renderCashCard();
   renderCashEntries();
+  if ($('#trade-held-hint')) renderFeePreview();
   if (!$('#cash-modal').classList.contains('hidden')) syncCashModalUI();
 }
 
@@ -382,7 +388,7 @@ function renderCashEntries() {
   if (opening !== 0) rows.push(`<div class="cash-row opening"><small>${state.cashStartedAt ? formatDate(state.cashStartedAt) : '-'}</small><span class="cash-kind">期初结转</span><span class="cash-note">起算日前已有持仓</span><strong class="cash-amt">${money(opening, tab)}</strong><span class="cash-action"></span></div>`);
   entries.filter(entry => currencyOf(entry) === tab).forEach(entry => {
     const deposit = entry.kind === 'deposit';
-    rows.push(`<div class="cash-row"><small>${escapeHtml(formatDateTime(entry.created_at))}</small><span class="cash-kind${deposit ? ' dep' : ''}">${deposit ? '入金' : '出金'}</span><span class="cash-note">${entry.note ? escapeHtml(entry.note) : '—'}</span><strong class="cash-amt">${deposit ? '+' : '-'}${absMoney(Number(entry.amount), tab)}</strong><span class="cash-action"><button class="cash-delete" type="button" data-id="${escapeAttr(entry.id)}">删除</button></span></div>`);
+    rows.push(`<div class="cash-row"><small>${escapeHtml(formatDateTime(entry.created_at))}</small><span class="cash-kind${deposit ? ' dep' : ''}">${deposit ? '入金' : '出金'}</span><span class="cash-note">${entry.note ? escapeHtml(entry.note) : '—'}</span><strong class="cash-amt">${deposit ? '+' : '-'}${absMoney(Number(entry.amount), tab)}</strong><span class="cash-action"><button class="text-action danger cash-delete" type="button" data-id="${escapeAttr(entry.id)}">删除</button></span></div>`);
   });
   el.innerHTML = rows.length ? head + rows.join('') : `<div class="cash-history-empty">还没有${tab === 'HKD' ? '港币' : '人民币'}资金记录，点「记一笔」开始。</div>`;
   $$('.cash-delete').forEach(button => button.addEventListener('click', () => deleteCashEntry(button.dataset.id)));
@@ -518,7 +524,7 @@ function holdingRow(item, currency) {
   const pct = invested > 0 ? (totalPnl / invested) * 100 : 0;
   const pctText = invested > 0 ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '--';
   const selected = state.chartSecurity && String(state.chartSecurity.id) === String(id);
-  return `<tr data-sid="${escapeAttr(id)}"${selected ? ' class="sel"' : ''}><td><button class="holding-link" data-id="${escapeAttr(id)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}"><span class="stock-name">${escapeHtml(name)}</span><span class="stock-code">${escapeHtml(code)} · ${escapeHtml(item.exchange ? exchangeLabel(item.exchange) : (currency === 'HKD' ? '港交所' : 'A 股'))}</span></button></td><td>${number(qty, 4)}</td><td>${priceMoney(cost, currency)}</td><td>${priceMoney(price, currency)}</td><td>${money(value, currency)}</td><td class="${pnlClass(pnl)}">${signedMoney(pnl, currency)}</td><td class="${pnlClass(realized)}">${signedMoney(realized, currency)}</td><td class="${invested > 0 ? pnlClass(totalPnl) : 'muted'}">${pctText}</td><td><div class="holding-ops"><button class="row-trade" data-trade-id="${escapeAttr(id)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}" data-exchange="${escapeAttr(item.exchange || '')}" data-market="${escapeAttr(item.market || '')}">买卖</button><button class="row-tplan" data-tid="${escapeAttr(id)}" data-qty="${escapeAttr(qty)}" data-cost="${escapeAttr(cost)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}" data-exchange="${escapeAttr(item.exchange || '')}">做T</button></div></td></tr>`;
+  return `<tr data-sid="${escapeAttr(id)}"${selected ? ' class="sel"' : ''}><td><button class="holding-link" data-id="${escapeAttr(id)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}"><span class="stock-name">${escapeHtml(name)}</span><span class="stock-code">${escapeHtml(code)} · ${escapeHtml(item.exchange ? exchangeLabel(item.exchange) : (currency === 'HKD' ? '港交所' : 'A 股'))}</span></button></td><td>${number(qty, 4)}</td><td>${money(cost, currency)}</td><td>${priceMoney(price, currency)}</td><td>${money(value, currency)}</td><td class="${pnlClass(pnl)}">${signedMoney(pnl, currency)}</td><td class="${pnlClass(realized)}">${signedMoney(realized, currency)}</td><td class="${invested > 0 ? pnlClass(totalPnl) : 'muted'}">${pctText}</td><td><div class="holding-ops"><button class="text-action row-trade" data-trade-id="${escapeAttr(id)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}" data-exchange="${escapeAttr(item.exchange || '')}" data-market="${escapeAttr(item.market || '')}">买卖</button><button class="text-action row-tplan" data-tid="${escapeAttr(id)}" data-qty="${escapeAttr(qty)}" data-cost="${escapeAttr(cost)}" data-name="${escapeAttr(name)}" data-code="${escapeAttr(code)}" data-currency="${currency}" data-exchange="${escapeAttr(item.exchange || '')}">做T</button></div></td></tr>`;
 }
 
 function syncHoldingSelection() {
@@ -541,6 +547,29 @@ function syncSellQtyLimit() {
   if (state.side === 'sell' && held > 0) input.setAttribute('max', String(held)); else input.removeAttribute('max');
 }
 
+function setTradeSide(side) {
+  state.side = side;
+  $('#trade-side').value = side;
+  $$('#trade-form .direction').forEach(item => {
+    item.classList.remove('active', 'buy', 'sell');
+    if (item.dataset.side === side) item.classList.add('active', side);
+  });
+  syncSellQtyLimit();
+  renderFeePreview();
+}
+
+function syncSellAvailability() {
+  const sellButton = $('#trade-form .direction[data-side="sell"]');
+  if (!sellButton) return;
+  const security = state.selectedSecurity;
+  const held = security ? heldQuantity(security.security_id ?? security.id) : 0;
+  const disabled = Boolean(security) && held <= 0;
+  sellButton.disabled = disabled;
+  sellButton.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  sellButton.title = disabled ? '该股票当前没有持仓，不能卖出' : '';
+  if (disabled && state.side === 'sell') setTradeSide('buy');
+}
+
 function selectSecurity(security) {
   const securityId = security.id ?? security.security_id ?? '';
   if (state.side === 'sell' && heldQuantity(securityId) <= 0) { toast('该股票当前没有持仓，不能卖出', true); return; }
@@ -554,6 +583,7 @@ function selectSecurity(security) {
   if (chipMeta && held > 0) chipMeta.textContent = `${chipMeta.textContent} · 可卖 ${number(held, 4)} 股`;
   hideSecurityList('#security-results');
   syncSellQtyLimit();
+  syncSellAvailability();
   renderFeePreview();
 }
 function clearSecurity() {
@@ -567,6 +597,7 @@ function clearSecurity() {
   hideSecurityList('#security-results');
   $('#trade-quantity').removeAttribute('max');
   $('#trade-held-hint').textContent = '股';
+  syncSellAvailability();
   renderFeePreview();
 }
 function gotoTradeWithSecurity(dataset) {
@@ -588,7 +619,7 @@ function securityChipMeta(security) {
 function renderSecurityChip(chipSel, security, onClear) {
   const chip = $(chipSel);
   chip.classList.remove('hidden');
-  chip.innerHTML = `${securityChipMeta(security)}<button type="button" class="text-button" data-clear-security>更换</button>`;
+  chip.innerHTML = `${securityChipMeta(security)}<button type="button" class="text-action" data-clear-security>更换</button>`;
   $('[data-clear-security]', chip).addEventListener('click', () => { onClear(); openComboByChip(chipSel); });
   return securityCurrency(security);
 }
@@ -753,7 +784,7 @@ function formatDate(value) {
 function reviewCard(item) {
   const period = PERIOD_LABELS[item.holding_period] || item.holding_period || '-';
   const excerpt = item.content_text || '';
-  return `<article class="review-card"><div class="review-head"><div><strong>${escapeHtml(item.name || '-')}</strong><small>${escapeHtml(item.code || '')} · ${escapeHtml(item.exchange ? exchangeLabel(item.exchange) : '')}</small></div><span class="period-tag${item.holding_period === 'forever' ? ' forever' : ''}"><em>持仓周期</em>${escapeHtml(period)}</span></div><p class="review-excerpt">${escapeHtml(excerpt)}</p><div class="review-foot"><small>更新于 ${formatDateTime(item.updated_at)}</small><div class="review-actions"><button class="review-view" data-id="${escapeAttr(item.id)}">查看</button><button class="review-edit" data-id="${escapeAttr(item.id)}">编辑</button><button class="review-delete danger" data-id="${escapeAttr(item.id)}">删除</button></div></div></article>`;
+  return `<article class="review-card"><div class="review-head"><div><strong>${escapeHtml(item.name || '-')}</strong><small>${escapeHtml(item.code || '')} · ${escapeHtml(item.exchange ? exchangeLabel(item.exchange) : '')}</small></div><span class="period-tag${item.holding_period === 'forever' ? ' forever' : ''}"><em>持仓周期</em>${escapeHtml(period)}</span></div><p class="review-excerpt">${escapeHtml(excerpt)}</p><div class="review-foot"><small>更新于 ${formatDateTime(item.updated_at)}</small><div class="review-actions"><button class="text-action review-view" data-id="${escapeAttr(item.id)}">查看</button><button class="text-action review-edit" data-id="${escapeAttr(item.id)}">编辑</button><button class="text-action danger review-delete" data-id="${escapeAttr(item.id)}">删除</button></div></div></article>`;
 }
 
 function reviewScopeGroups() {
@@ -839,7 +870,7 @@ function openReviewModal(mode, review = null, quick = null) {
     state.reviewSecurity = { security_id: review.security_id, name: review.name, code: review.code, exchange: review.exchange, currency: review.currency };
     const el = $('#review-selected-security');
     el.classList.remove('hidden');
-    el.innerHTML = `<div><strong>${escapeHtml(review.name || '-')}</strong><small>${escapeHtml(review.code || '')} · ${escapeHtml(exchangeLabel(review.exchange))}</small></div>${mode === 'create' ? '<button type="button" class="text-button" id="review-clear-security">更换</button>' : ''}`;
+    el.innerHTML = `<div><strong>${escapeHtml(review.name || '-')}</strong><small>${escapeHtml(review.code || '')} · ${escapeHtml(exchangeLabel(review.exchange))}</small></div>${mode === 'create' ? '<button type="button" class="text-action" id="review-clear-security">更换</button>' : ''}`;
     if (mode === 'create') $('#review-clear-security').addEventListener('click', clearReviewSecurity);
     state.reviewPeriod = review.holding_period;
     editor.innerHTML = review.content_html || '';
@@ -1051,14 +1082,22 @@ function renderFeePreview() {
   const funds = $('#fee-preview');
   const payEl = $('#preview-pay');
   const afterEl = $('#preview-after');
+  const costEl = $('#preview-cost');
   const hint = $('#trade-held-hint');
-  if (hint) hint.textContent = side === 'sell' && security ? `可卖 ${number(heldQuantity(security.security_id ?? security.id), 4)} 股` : '股';
+  if (hint) {
+    if (side === 'sell' && security) hint.textContent = `可卖 ${number(heldQuantity(security.security_id ?? security.id), 4)} 股`;
+    else if (side === 'buy' && security) {
+      const cashCurrency = security.currency || ((security.market || '').toUpperCase() === 'HK' ? 'HKD' : 'CNY');
+      hint.textContent = `可用 ${money(Number(state.cash?.[cashCurrency] || 0), cashCurrency)}`;
+    } else hint.textContent = '股';
+  }
   if (!security) {
     state.tradeFeeTotal = 0;
     if (stockBox) stockBox.innerHTML = '<strong class="muted">尚未选择股票</strong><small>选择后显示成交金额与费用</small>';
     if (funds) funds.innerHTML = '<div class="fee-line"><span>成交金额</span><span>--</span></div><div class="fee-line total"><span>费用合计</span><span>--</span></div>';
     if (payEl) payEl.textContent = '--';
     if (afterEl) { afterEl.textContent = '--'; afterEl.className = ''; }
+    if (costEl) costEl.textContent = '--';
     return;
   }
   const price = Number($('#trade-price')?.value || 0);
@@ -1075,6 +1114,7 @@ function renderFeePreview() {
     if (funds) funds.innerHTML = '<div class="fee-line"><span>成交金额</span><span>--</span></div><div class="fee-line total"><span>费用合计</span><span>--</span></div>';
     if (payEl) payEl.textContent = '--';
     if (afterEl) { afterEl.textContent = '--'; afterEl.className = ''; }
+    if (costEl) costEl.textContent = '--';
     return;
   }
   const feeMarket = market === 'hk' ? 'HK' : ({ SSE: 'SH', SZSE: 'SZ', BSE: 'BSE' }[security.exchange] || security.fee_market);
@@ -1090,9 +1130,22 @@ function renderFeePreview() {
   const afterCash = side === 'buy' ? available - (amount + total) : available + (amount - total);
   const insufficient = side === 'buy' && afterCash < 0;
   if (afterEl) { afterEl.textContent = `${money(afterCash, currency)}${insufficient ? ' · 可用金额不足' : ''}`; afterEl.className = insufficient ? 'cash-negative' : ''; }
+  const holding = (state.holdings || []).find(item => String(item.security_id ?? item.id) === String(security.security_id ?? security.id));
+  const heldQty = Number(holding?.quantity || 0);
+  const heldCost = Number(holding?.average_cost || 0);
+  let afterCost = null;
+  if (side === 'buy') {
+    const nextQty = heldQty + qty;
+    if (nextQty > 0) afterCost = (heldQty * heldCost + amount + total) / nextQty;
+  } else {
+    const nextQty = heldQty - qty;
+    if (nextQty > 0) afterCost = state.costMethod === 'diluted' ? (heldQty * heldCost - (amount - total)) / nextQty : heldCost;
+  }
+  if (costEl) costEl.textContent = afterCost == null ? '--' : money(afterCost, currency);
 }
 
 function calculateFee(rule, amount) {
+  if (rule.waived) return 0;
   const type = rule.calc_type || rule.type || (Number(rule.rate) ? 'ratio' : 'fixed');
   if (rule.included || type === 'included' || type === 'zero' || type === 'none') return 0;
   let fee;
@@ -1183,12 +1236,12 @@ function renderTrades() {
     const unit = trade.unit_price ? Number(trade.unit_price) : (Number(trade.quantity) ? amount / Number(trade.quantity) : 0);
     const details = trade.fee_details || [];
     const expanded = state.expandedFees.has(String(trade.id));
-    const toggle = details.length ? `<button type="button" class="history-fee-toggle" data-fee-id="${escapeAttr(trade.id)}" aria-expanded="${expanded}">${expanded ? '收起' : '明细'}</button>` : '';
+    const toggle = details.length ? `<button type="button" class="text-action compact history-fee-toggle" data-fee-id="${escapeAttr(trade.id)}" aria-expanded="${expanded}">${expanded ? '收起' : '明细'}</button>` : '';
     const exchange = trade.exchange ? ` · ${escapeHtml(exchangeLabel(trade.exchange))}` : '';
     const recorded = trade.created_at ? formatDateTime(trade.created_at) : (trade.trade_date || trade.date || '-');
     const tradeDate = trade.trade_date || trade.date || '';
     const dateCell = `${escapeHtml(recorded)}${tradeDate && tradeDate !== recorded.slice(0, 10) ? `<small class="history-date-sub">成交日 ${escapeHtml(tradeDate)}</small>` : ''}`;
-    const row = `<tr class="history-row"><td>${dateCell}</td><td class="history-stock"><strong>${escapeHtml(trade.name || trade.security_name || '-')}</strong><small>${escapeHtml(trade.code || trade.symbol_code || '')}${exchange}</small></td><td><span class="history-side ${trade.side === 'sell' ? 'sell' : 'buy'}">${trade.side === 'sell' ? '卖出' : '买入'}</span></td><td>${number(trade.quantity, 4)}</td><td>${priceMoney(unit, currency)}</td><td>${money(amount, currency)}</td><td>${money(fee, currency)}${toggle}</td><td>${historyNetText(trade, currency)}</td><td>${formatMarketCap(trade.market_cap, currency)}</td><td><button class="history-void" type="button" data-id="${escapeAttr(trade.id)}" aria-label="作废这笔交易">作废</button></td></tr>`;
+    const row = `<tr class="history-row"><td>${dateCell}</td><td class="history-stock"><strong>${escapeHtml(trade.name || trade.security_name || '-')}</strong><small>${escapeHtml(trade.code || trade.symbol_code || '')}${exchange}</small></td><td><span class="history-side ${trade.side === 'sell' ? 'sell' : 'buy'}">${trade.side === 'sell' ? '卖出' : '买入'}</span></td><td>${number(trade.quantity, 4)}</td><td>${priceMoney(unit, currency)}</td><td>${money(amount, currency)}</td><td>${money(fee, currency)}${toggle}</td><td>${historyNetText(trade, currency)}</td><td>${formatMarketCap(trade.market_cap, currency)}</td><td><button class="text-action danger history-void" type="button" data-id="${escapeAttr(trade.id)}" aria-label="作废这笔交易">作废</button></td></tr>`;
     if (!expanded) return row;
     const total = details.reduce((sum, line) => sum + Number(line.amount ?? 0), 0);
     const cells = details.map(line => {
@@ -1212,7 +1265,7 @@ function renderTrades() {
 
 function feeConfigKey(rule) {
   const isRate = ['rate', 'ratio', 'ratio_min', 'ratio_min_max'].includes(rule.calc_type) || rule.type === 'rate' || rule.type === 'ratio';
-  return JSON.stringify([rule.calc_type, rule.type, isRate ? rule.rate : (rule.fixed_amount ?? rule.amount), rule.min_fee ?? rule.minimum, rule.max_fee ?? rule.maximum, rule.rounding, !!rule.included]);
+  return JSON.stringify([rule.calc_type, rule.type, isRate ? rule.rate : (rule.fixed_amount ?? rule.amount), rule.min_fee ?? rule.minimum, rule.max_fee ?? rule.maximum, rule.rounding, !!rule.included, !!rule.waived]);
 }
 
 function mergeFeeSides(rows) {
@@ -1233,29 +1286,24 @@ function mergeFeeSides(rows) {
 
 function renderFeeRules() {
   const markets = [{ key: 'a', title: 'A 股', subtitle: '上交所 · 深交所 · 北交所 · CNY' }, { key: 'hk', title: '港股', subtitle: '港交所 · HKD' }];
-  $('#fee-rules-container').innerHTML = markets.map(market => `<article class="fee-market-card"><div class="fee-market-head"><div><h3>${market.title}</h3><small>${market.subtitle}</small></div><small>生效日期由服务器管理</small></div><div class="table-scroll"><table class="fee-table"><thead><tr><th>费用项目</th><th>方向</th><th>收费方式</th><th>费率 / 金额</th><th>最低收费</th><th>最高收费</th><th>取整</th></tr></thead><tbody>${(state.feeDisplay[market.key] || []).map((entry, index) => { const rule = entry.rep || {}; const isRate = ['rate', 'ratio', 'ratio_min', 'ratio_min_max'].includes(rule.calc_type) || rule.type === 'rate' || rule.type === 'ratio'; const dir = entry.both ? '双向' : entry.sides[0] === 'sell' ? '卖出' : '买入'; return `<tr data-market="${market.key}" data-index="${index}"><td>${escapeHtml(entry.name)}</td><td>${dir}</td><td><select class="fee-select fee-type"><option value="zero" ${rule.calc_type === 'zero' || rule.type === 'none' ? 'selected' : ''}>0 / 不收取</option><option value="fixed" ${rule.calc_type === 'fixed' || rule.type === 'fixed' ? 'selected' : ''}>固定金额</option><option value="rate" ${isRate ? 'selected' : ''}>按比例</option><option value="included" ${rule.included || rule.type === 'included' ? 'selected' : ''}>已包含</option></select></td><td><input class="fee-input fee-value" type="number" step="any" min="0" value="${escapeAttr(plainNumber(isRate ? rule.rate ?? 0 : rule.fixed_amount ?? rule.amount ?? rule.value ?? 0))}"></td><td><input class="fee-input fee-min" type="number" step="any" min="0" value="${escapeAttr(plainNumber(rule.min_fee ?? rule.minimum ?? 0))}"></td><td><input class="fee-input fee-max" type="number" step="any" min="0" value="${escapeAttr(plainNumber(rule.max_fee ?? rule.maximum ?? 0))}"></td><td><select class="fee-select fee-round"><option value="cent">按分</option><option value="integer_up" ${rule.rounding === 'integer_up' || rule.rounding === 'ceil' ? 'selected' : ''}>向上取整</option><option value="floor" ${rule.rounding === 'floor' ? 'selected' : ''}>向下取整</option><option value="ceil_unit" ${rule.rounding === 'ceil_unit' || rule.rounding === 'ceil_dollar' ? 'selected' : ''}>向上取整到元</option></select></td></tr>`; }).join('') || '<tr><td colspan="7" class="muted center">暂无规则</td></tr>'}</tbody></table></div></article>`).join('');
+  $('#fee-rules-container').innerHTML = markets.map(market => `<article class="fee-market-card"><div class="fee-market-head"><div><h3>${market.title}</h3><small>${market.subtitle}</small></div><small>生效日期由服务器管理</small></div><div class="table-scroll"><table class="fee-table"><thead><tr><th>费用项目</th><th>方向</th><th>收费方式</th><th>费率 / 金额</th><th>最低收费</th><th>最高收费</th><th>取整</th><th>不收费</th></tr></thead><tbody>${(state.feeDisplay[market.key] || []).map((entry, index) => { const rule = entry.rep || {}; const isRate = ['rate', 'ratio', 'ratio_min', 'ratio_min_max'].includes(rule.calc_type) || rule.type === 'rate' || rule.type === 'ratio'; const dir = entry.both ? '双向' : entry.sides[0] === 'sell' ? '卖出' : '买入'; return `<tr data-market="${market.key}" data-index="${index}"><td data-label="费用项目">${escapeHtml(entry.name)}</td><td data-label="方向">${dir}</td><td data-label="收费方式"><select class="fee-select fee-type"><option value="zero" ${rule.calc_type === 'zero' || rule.type === 'none' ? 'selected' : ''}>0 / 不收取</option><option value="fixed" ${rule.calc_type === 'fixed' || rule.type === 'fixed' ? 'selected' : ''}>固定金额</option><option value="rate" ${isRate ? 'selected' : ''}>按比例</option><option value="included" ${rule.included || rule.type === 'included' ? 'selected' : ''}>已包含</option></select></td><td data-label="费率 / 金额"><input class="fee-input fee-value" type="number" step="any" min="0" value="${escapeAttr(plainNumber(isRate ? rule.rate ?? 0 : rule.fixed_amount ?? rule.amount ?? rule.value ?? 0))}"></td><td data-label="最低收费"><input class="fee-input fee-min" type="number" step="any" min="0" value="${escapeAttr(plainNumber(rule.min_fee ?? rule.minimum ?? 0))}"></td><td data-label="最高收费"><input class="fee-input fee-max" type="number" step="any" min="0" value="${escapeAttr(plainNumber(rule.max_fee ?? rule.maximum ?? 0))}"></td><td data-label="取整"><select class="fee-select fee-round"><option value="cent">按分</option><option value="integer_up" ${rule.rounding === 'integer_up' || rule.rounding === 'ceil' ? 'selected' : ''}>向上取整</option><option value="floor" ${rule.rounding === 'floor' ? 'selected' : ''}>向下取整</option><option value="ceil_unit" ${rule.rounding === 'ceil_unit' || rule.rounding === 'ceil_dollar' ? 'selected' : ''}>向上取整到元</option></select></td><td data-label="不收费"><label class="fee-waive"><input class="fee-waived" type="checkbox" ${rule.waived ? 'checked' : ''}><span>不收费</span></label></td></tr>`; }).join('') || '<tr><td colspan="8" class="muted center">暂无规则</td></tr>'}</tbody></table></div></article>`).join('');
 }
 
-async function saveFeeRules() {
+async function saveSettings() {
   try {
     for (const market of ['a', 'hk']) {
       const rows = [];
       const display = state.feeDisplay[market] || [];
-      $$(`tr[data-market="${market}"]`).forEach(row => { const entry = display[Number(row.dataset.index)] || { name: '', sides: ['buy'], configs: {} }; const type = $('.fee-type', row).value; const value = Math.max(0, Number($('.fee-value', row).value || 0)); const minimum = Math.max(0, Number($('.fee-min', row).value || 0)); const maximum = Math.max(0, Number($('.fee-max', row).value || 0)); $('.fee-value', row).value = value; $('.fee-min', row).value = minimum; $('.fee-max', row).value = maximum; const rounding = $('.fee-round', row).value; const rateCalc = minimum > 0 && maximum > 0 ? 'ratio_min_max' : minimum > 0 ? 'ratio_min' : maximum > 0 ? 'ratio_max' : 'ratio'; for (const side of entry.sides) { const old = entry.configs[side] || entry.rep || {}; rows.push({ ...old, calc_type: type === 'rate' ? rateCalc : type, rate: type === 'rate' ? plainNumber(value) : 0, fixed_amount: type === 'fixed' ? plainNumber(value) : 0, min_fee: plainNumber(minimum), max_fee: plainNumber(maximum), rounding, included: type === 'included', side, name: entry.name }); } });
+      $$(`tr[data-market="${market}"]`).forEach(row => { const entry = display[Number(row.dataset.index)] || { name: '', sides: ['buy'], configs: {} }; const type = $('.fee-type', row).value; const value = Math.max(0, Number($('.fee-value', row).value || 0)); const minimum = Math.max(0, Number($('.fee-min', row).value || 0)); const maximum = Math.max(0, Number($('.fee-max', row).value || 0)); $('.fee-value', row).value = value; $('.fee-min', row).value = minimum; $('.fee-max', row).value = maximum; const rounding = $('.fee-round', row).value; const waived = !!$('.fee-waived', row)?.checked; const rateCalc = minimum > 0 && maximum > 0 ? 'ratio_min_max' : minimum > 0 ? 'ratio_min' : maximum > 0 ? 'ratio_max' : 'ratio'; for (const side of entry.sides) { const old = entry.configs[side] || entry.rep || {}; rows.push({ ...old, calc_type: type === 'rate' ? rateCalc : type, rate: type === 'rate' ? plainNumber(value) : 0, fixed_amount: type === 'fixed' ? plainNumber(value) : 0, min_fee: plainNumber(minimum), max_fee: plainNumber(maximum), rounding, included: type === 'included', waived, side, name: entry.name }); } });
       if (!rows.length) continue;
       await request('/api/fees', { method: 'PUT', body: { market: market === 'a' ? 'A' : 'HK', rules: rows } });
       state.feeRules[market] = rows;
       state.feeDisplay[market] = mergeFeeSides(rows);
     }
-    toast('费用规则已保存'); renderFeeRules(); renderFeePreview();
-  } catch (error) { toast(error.message, true); }
-}
-
-async function saveCostMethod() {
-  try {
-    const method = $('#cost-method').value;
-    await request('/api/settings', { method: 'PUT', body: { cost_method: method } });
-    toast('成本算法已保存');
+    await request('/api/settings', { method: 'PUT', body: { cost_method: $('#cost-method').value } });
+    toast('设置已保存');
+    renderFeeRules();
+    renderFeePreview();
     await loadDashboard();
   } catch (error) { toast(error.message, true); }
 }
@@ -1275,7 +1323,7 @@ async function selectChartSecurity(id, name, code, currency) {
   $('#chart-tip').classList.add('hidden');
   $('#chart-title').textContent = `${name} ${code}`;
   const holding = (state.holdings || []).find(item => String(item.security_id ?? item.id) === String(id));
-  $('#chart-cost').textContent = holding ? `成本 ${priceMoney(Number(holding.average_cost), currency)}` : '';
+  $('#chart-cost').textContent = holding ? `成本 ${money(Number(holding.average_cost), currency)}` : '';
   $('#chart-latest').textContent = holding ? `最新 ${priceMoney(Number(holding.last_price), currency)}` : '';
   syncHoldingSelection();
   try {
@@ -1451,17 +1499,6 @@ const CURRENCY_LABELS = { CNY: '人民币', HKD: '港币' };
 function currencyLabel(value) { return CURRENCY_LABELS[value] || value || ''; }
 const WATCH_STATUS_LABELS = { watching: '关注中', bought: '已建仓', reached: '已到目标价' };
 const COST_METHOD_LABELS = { moving_average: '移动加权平均', fifo: '先进先出（FIFO）', diluted: '摊薄成本' };
-const AUDIT_ACTION_LABELS = {
-  trade_create: '新增交易', trade_void: '作废交易',
-  t_plan_create: '记录做T测算', t_plan_close: '做T回填', t_plan_delete: '删除做T记录', t_plan_update: '修改做T测算', t_plan_reopen: '做T计划恢复',
-  cash_entry_create: '入金 / 出金', cash_entry_delete: '撤销资金记录',
-  t_plan_link: '关联做T成交', t_plan_unlink: '解除做T关联',
-  review_create: '新增复盘', review_update: '修改复盘', review_delete: '删除复盘',
-  watch_create: '新增关注', watch_update: '修改关注', watch_remove: '移除关注',
-  watch_note_create: '新增跟进', watch_note_update: '修改跟进', watch_note_delete: '删除跟进',
-  settings_update: '修改成本算法',
-  password_reset: '重置密码',
-};
 
 function boardCardHtml(card) {
   const currency = card.currency || 'CNY';
@@ -1549,7 +1586,7 @@ function drawBoardChart(canvas, card, options = {}) {
     ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = token('--panel'); ctx.stroke();
   });
   if (costVisible) {
-    const costText = `${priceMoney(cost, card.currency)} ${costLabel}`;
+    const costText = `${money(cost, card.currency)} ${costLabel}`;
     const costY = Math.min(Math.max(y(cost) - 9, top + 8), plotBottom - 8);
     ctx.fillStyle = token('--panel'); ctx.fillRect(left + 3, costY - 8, ctx.measureText(costText).width + 10, 16);
     ctx.fillStyle = token('--muted-2'); ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(costText, left + 8, costY);
@@ -1639,7 +1676,7 @@ function watchCardHtml(item) {
     ['距目标价', gap == null ? '--' : `${gap > 0 ? '高于目标' : gap < 0 ? '低于目标' : '等于目标'}${gap === 0 ? '' : ` ${Math.abs(gap).toFixed(2)}%`}`, ''],
   ];
   const note = item.latest_note;
-  return `<article class="board-card watch-card${reached ? ' watch-reached' : ''}" data-wid="${escapeAttr(item.id)}"><div class="board-card-head"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)} · ${escapeHtml(item.exchange || '')}</small>${badge}</div><button class="watch-detail text-button" data-id="${escapeAttr(item.id)}">跟进记录</button></div><div class="board-metrics">${metrics.map(([label, value, klass]) => `<div><span>${label}</span><strong class="${klass}">${value}</strong></div>`).join('')}</div><div class="watch-meta-row"><button type="button" class="watch-notes-open" data-id="${escapeAttr(item.id)}">${note ? `跟进 ${number(item.notes_count ?? 0, 0)} 条 · 最近 ${formatDateTime(note.updated_at)}` : '还没有跟进分析'}</button><div class="range-tabs board-card-ranges">${Object.entries(BOARD_RANGE_LABELS).map(([value, label]) => `<button class="board-range${value === (item.range || state.watchRange) ? ' active' : ''}" data-brange="${value}">${label}</button>`).join('')}</div></div><div class="board-chart-wrap"><canvas class="board-chart" role="img" aria-label="${escapeAttr(item.name)} ${escapeAttr(BOARD_RANGE_LABELS[item.range || state.watchRange] || '')}价格与目标价走势折线图" data-wid="${escapeAttr(item.id)}"></canvas><div class="chart-tip hidden"></div>${(item.series || []).length < 2 ? '<div class="chart-empty">暂无价格数据</div>' : ''}</div><div class="watch-actions"><button class="secondary watch-note-add" data-id="${escapeAttr(item.id)}">写跟进</button><button class="secondary watch-edit" data-id="${escapeAttr(item.id)}">编辑目标价</button>${bought ? '' : `<button class="primary watch-buy" data-id="${escapeAttr(item.id)}">买入建仓</button>`}<button class="danger text-button watch-remove" data-id="${escapeAttr(item.id)}">移除</button></div></article>`;
+  return `<article class="board-card watch-card${reached ? ' watch-reached' : ''}" data-wid="${escapeAttr(item.id)}"><div class="board-card-head"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.code)} · ${escapeHtml(item.exchange || '')}</small>${badge}</div><button class="text-action watch-detail" data-id="${escapeAttr(item.id)}">跟进记录</button></div><div class="board-metrics">${metrics.map(([label, value, klass]) => `<div><span>${label}</span><strong class="${klass}">${value}</strong></div>`).join('')}</div><div class="watch-meta-row"><button type="button" class="text-action muted watch-notes-open" data-id="${escapeAttr(item.id)}">${note ? `跟进 ${number(item.notes_count ?? 0, 0)} 条 · 最近 ${formatDateTime(note.updated_at)}` : '还没有跟进分析'}</button><div class="range-tabs board-card-ranges">${Object.entries(BOARD_RANGE_LABELS).map(([value, label]) => `<button class="board-range${value === (item.range || state.watchRange) ? ' active' : ''}" data-brange="${value}">${label}</button>`).join('')}</div></div><div class="board-chart-wrap"><canvas class="board-chart" role="img" aria-label="${escapeAttr(item.name)} ${escapeAttr(BOARD_RANGE_LABELS[item.range || state.watchRange] || '')}价格与目标价走势折线图" data-wid="${escapeAttr(item.id)}"></canvas><div class="chart-tip hidden"></div>${(item.series || []).length < 2 ? '<div class="chart-empty">暂无价格数据</div>' : ''}</div><div class="watch-actions"><button class="secondary watch-note-add" data-id="${escapeAttr(item.id)}">写跟进</button><button class="secondary watch-edit" data-id="${escapeAttr(item.id)}">编辑目标价</button>${bought ? '' : `<button class="primary watch-buy" data-id="${escapeAttr(item.id)}">买入建仓</button>`}<button class="text-action danger watch-remove" data-id="${escapeAttr(item.id)}">移除</button></div></article>`;
 }
 
 function renderWatch() {
@@ -1741,7 +1778,7 @@ function openWatchModal(mode, item = null) {
   const chip = $('#watch-selected-security');
   if (state.watchSecurity) {
     chip.classList.remove('hidden');
-    chip.innerHTML = `${securityChipMeta(state.watchSecurity)}${mode === 'edit' ? '' : '<button type="button" class="text-button" id="watch-clear-security">更换</button>'}`;
+    chip.innerHTML = `${securityChipMeta(state.watchSecurity)}${mode === 'edit' ? '' : '<button type="button" class="text-action" id="watch-clear-security">更换</button>'}`;
     if (mode !== 'edit') $('#watch-clear-security').addEventListener('click', clearWatchSecurity);
   } else {
     chip.classList.add('hidden');
@@ -1808,7 +1845,7 @@ function closeWatchDetail() { closeModal('#watch-detail-modal'); }
 
 function renderWatchNotes(notes) {
   state.watchNotes = notes;
-  $('#watch-notes').innerHTML = notes.length ? notes.map(note => `<article class="watch-note"><div class="watch-note-head"><small>更新于 ${formatDateTime(note.updated_at)}</small><div class="review-actions"><button class="watch-note-view" data-id="${escapeAttr(note.id)}">查看</button><button class="watch-note-edit" data-id="${escapeAttr(note.id)}">编辑</button><button class="watch-note-delete danger" data-id="${escapeAttr(note.id)}">删除</button></div></div><p class="review-excerpt">${escapeHtml(note.content_text || '')}</p></article>`).join('') : '<div class="empty-state">还没有跟进记录，点「写跟进」写下第一条。</div>';
+  $('#watch-notes').innerHTML = notes.length ? notes.map(note => `<article class="watch-note"><div class="watch-note-head"><small>更新于 ${formatDateTime(note.updated_at)}</small><div class="review-actions"><button class="text-action watch-note-view" data-id="${escapeAttr(note.id)}">查看</button><button class="text-action watch-note-edit" data-id="${escapeAttr(note.id)}">编辑</button><button class="text-action danger watch-note-delete" data-id="${escapeAttr(note.id)}">删除</button></div></div><p class="review-excerpt">${escapeHtml(note.content_text || '')}</p></article>`).join('') : '<div class="empty-state">还没有跟进记录，点「写跟进」写下第一条。</div>';
   $$('#watch-notes .watch-note-view').forEach(button => button.addEventListener('click', () => openWatchNoteModal('view', state.watchNotes.find(note => String(note.id) === button.dataset.id))));
   $$('#watch-notes .watch-note-edit').forEach(button => button.addEventListener('click', () => openWatchNoteModal('edit', state.watchNotes.find(note => String(note.id) === button.dataset.id))));
   if (state.watchNotes.length < state.notesPage.total) {
@@ -1923,7 +1960,7 @@ function selectTplanSecurity(security) {
   $('#tplan-security-search').value = '';
   const holding = (state.holdings || []).find(item => String(item.security_id ?? item.id) === String(security.security_id ?? security.id));
   const meta = $('#tplan-selected-security small');
-  if (meta && holding) meta.textContent = `${meta.textContent} · 持仓 ${number(Number(holding.quantity), 4)} 股 · 成本 ${priceMoney(Number(holding.average_cost), securityCurrency(security))}`;
+  if (meta && holding) meta.textContent = `${meta.textContent} · 持仓 ${number(Number(holding.quantity), 4)} 股 · 成本 ${money(Number(holding.average_cost), securityCurrency(security))}`;
   hideSecurityList('#tplan-security-results');
   syncTplanTargetUI();
   updateTplanAmount();
@@ -2067,7 +2104,7 @@ async function calcTplan() {
   ])) return;
   if (!state.tplanSecurity?.security_id) { toast('请先选择股票', true); $('#tplan-security-search').focus(); return; }
   const knownGross = roundHalfUp3(quantity * knownPrice);
-  const body = { security_id: state.tplanSecurity.security_id, direction: state.tplanDirection, quantity, known_gross: knownGross, target_type: $('#tplan-target-type').value, target_value: targetValue };
+  const body = { security_id: state.tplanSecurity.security_id, direction: state.tplanDirection, quantity, known_gross: knownGross, target_type: $('#tplan-target-type').value, target_value: targetValue, ...(state.tplanEditId ? { plan_id: state.tplanEditId } : {}) };
   const button = $('#tplan-calc');
   const token = ++tplanCalcToken;
   button.disabled = true;
@@ -2091,7 +2128,7 @@ function renderTplanResult(p) {
   const otherPriceLabel = p.direction === 'buy_first' ? '卖出价' : '回补价';
   const costMoney = value => {
     const n = Number(value);
-    return `${n < 0 ? '<span class="cost-sign">−</span>' : ''}${priceMoney(Math.abs(n), currency)}`;
+    return `${n < 0 ? '<span class="cost-sign">−</span>' : ''}${absMoney(roundHalfUp3(Math.abs(n)), currency)}`;
   };
   const feeLines = (lines, title) => `<div class="fee-detail"><h4>${title}</h4>${lines.map(l => `<div class="fee-line"><span>${escapeHtml(l.name)}</span><span>${money(Number(l.amount), currency)}</span></div>`).join('') || '<div class="fee-line"><span>无</span><span>0</span></div>'}</div>`;
   const spread = p.direction === 'buy_first' ? Number(p.solved_gross) - Number(p.known_gross) : Number(p.known_gross) - Number(p.solved_gross);
@@ -2141,7 +2178,7 @@ function renderTplans() {
   executed.forEach(p => { const currency = p.currency === 'HKD' ? 'HKD' : 'CNY'; sums[currency].actual += Number(p.actual_net || 0); sums[currency].plan += Number(p.plan_net || 0); });
   const curCell = currency => {
     const deltaText = signedMoney(sums[currency].actual - sums[currency].plan, currency);
-    return `<div class="tplan-cur"><span>${currency === 'HKD' ? '港币' : '人民币'} <em>${currency}</em></span><strong class="${pnlClass(sums[currency].actual)}">${signedMoney(sums[currency].actual, currency)}</strong><small>gap值：<span class="${pnlClass(sums[currency].actual - sums[currency].plan)}">${deltaText}</span></small></div>`;
+    return `<div class="tplan-cur"><span>${currency === 'HKD' ? '港币' : '人民币'} <em>${currency}</em></span><strong class="${pnlClass(sums[currency].actual)}">${signedMoney(sums[currency].actual, currency)}</strong><small>GAP值：<span class="${pnlClass(sums[currency].actual - sums[currency].plan)}">${deltaText}</span></small></div>`;
   };
   $('#tplan-stats').innerHTML = `<div class="tplan-stat"><span>计划总数</span><strong>${list.length}</strong></div><div class="tplan-stat"><span>待回填</span><strong>${open.length}</strong></div><div class="tplan-stat"><span>已回填</span><strong>${closed.length}</strong></div><div class="tplan-stat"><span>执行率</span><strong>${pct(executed.length, list.length)}</strong></div><div class="tplan-stat"><span>达标率</span><strong>${pct(hit.length, executed.length)}</strong></div>${curCell('CNY')}${curCell('HKD')}`;
   const counts = { all: list.length, open: open.length, closed: closed.length };
@@ -2203,9 +2240,9 @@ function planCard(p) {
   const actual = p.status === 'closed' && executed;
   const priceLine = `<div class="tplan-rec-line"><span>${knownLabel}</span><strong>${priceMoney(knownUnit, currency)}</strong><span class="arrow">→</span><span>${otherLabel}</span><strong>${priceMoney(Number(p.solved_unit_price), currency)}</strong><span class="sep">·</span><span>${amountLabel}</span><strong>${money(Number(p.solved_gross), currency)}</strong>${actual ? `<span class="sep">·</span><span>实际成交价</span><strong>${priceMoney(Number(p.actual_unit_price), currency)}</strong>` : ''}</div>`;
   const metricLine = actual
-    ? `<div class="tplan-rec-line"><span>实际净收益</span><strong class="${pnlClass(Number(p.actual_net))}">${signedMoney(Number(p.actual_net), currency)}</strong><span class="sep">/</span><span>目标</span><strong class="${pnlClass(Number(p.plan_net))}">${money(Number(p.plan_net), currency)}</strong><span class="sep">·</span><span>净收益率</span><strong class="${pnlClass(Number(p.actual_net))}">${base ? signedPct(Number(p.actual_net) / base * 100) : '--'}</strong><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>当前每股成本</span><strong>${priceMoney(cost, currency)}</strong>` : ''}</div>`
-    : `<div class="tplan-rec-line"><span>净收益</span><strong class="${pnlClass(net)}">${signedMoney(net, currency)}</strong><span class="sub ${pnlClass(net)}">${base ? signedPct(net / base * 100) : '--'}</span><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>成本</span><strong>${priceMoney(cost, currency)}</strong>${costAfter != null ? `<span class="arrow">→</span><strong>${priceMoney(costAfter, currency)}</strong>` : ''}` : ''}</div>`;
-  return `<article class="tplan-rec" data-id="${escapeAttr(p.id)}"><div class="tplan-rec-head"><div><span class="tplan-rec-name">${escapeHtml(p.name || '-')}</span><span class="tplan-rec-meta">${escapeHtml(p.code || '')} · ${escapeHtml(TDIR_LABELS[p.direction] || p.direction)} · 数量 ${number(qty, 4)}</span></div>${planBadge(p)}</div>${priceLine}${metricLine}<div class="tplan-rec-foot"><small>创建于 ${formatDateTime(p.created_at)}</small><div class="review-actions"><button class="plan-view" data-id="${escapeAttr(p.id)}" type="button">查看</button>${p.status === 'open' ? `<button class="plan-edit" data-id="${escapeAttr(p.id)}" type="button">编辑</button><button class="plan-feedback" data-id="${escapeAttr(p.id)}" type="button">回填执行</button>` : ''}<button class="plan-delete danger" data-id="${escapeAttr(p.id)}" type="button">删除</button></div></div></article>`;
+    ? `<div class="tplan-rec-line"><span>实际净收益</span><strong class="${pnlClass(Number(p.actual_net))}">${signedMoney(Number(p.actual_net), currency)}</strong><span class="sep">/</span><span>目标</span><strong class="${pnlClass(Number(p.plan_net))}">${money(Number(p.plan_net), currency)}</strong><span class="sep">·</span><span>净收益率</span><strong class="${pnlClass(Number(p.actual_net))}">${base ? signedPct(Number(p.actual_net) / base * 100) : '--'}</strong><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>当前每股成本</span><strong>${money(cost, currency)}</strong>` : ''}</div>`
+    : `<div class="tplan-rec-line"><span>净收益</span><strong class="${pnlClass(net)}">${signedMoney(net, currency)}</strong><span class="sub ${pnlClass(net)}">${base ? signedPct(net / base * 100) : '--'}</span><span class="sep">·</span><span>往返费用率</span><strong>${(Number(p.round_trip_fee_rate) * 100).toFixed(2)}%</strong>${cost != null ? `<span class="sep">·</span><span>成本</span><strong>${money(cost, currency)}</strong>${costAfter != null ? `<span class="arrow">→</span><strong>${money(costAfter, currency)}</strong>` : ''}` : ''}</div>`;
+  return `<article class="tplan-rec" data-id="${escapeAttr(p.id)}"><div class="tplan-rec-head"><div><span class="tplan-rec-name">${escapeHtml(p.name || '-')}</span><span class="tplan-rec-meta">${escapeHtml(p.code || '')} · ${escapeHtml(TDIR_LABELS[p.direction] || p.direction)} · 数量 ${number(qty, 4)}</span></div>${planBadge(p)}</div>${priceLine}${metricLine}<div class="tplan-rec-foot"><small>创建于 ${formatDateTime(p.created_at)}</small><div class="review-actions"><button class="text-action plan-view" data-id="${escapeAttr(p.id)}" type="button">查看</button>${p.status === 'open' ? `<button class="text-action plan-edit" data-id="${escapeAttr(p.id)}" type="button">编辑</button><button class="text-action plan-feedback" data-id="${escapeAttr(p.id)}" type="button">回填执行</button>` : ''}<button class="text-action danger plan-delete" data-id="${escapeAttr(p.id)}" type="button">删除</button></div></div></article>`;
 }
 
 function openTplansModal() { state.tplanStatus = 'all'; state.tplanSearch = ''; $('#tplan-search').value = ''; openModal('#tplans-modal'); loadTplans(); }
@@ -2231,16 +2268,16 @@ function openTplanView(plan) {
   const feeLines = lines => (lines && lines.length)
     ? lines.map(line => `<div class="tplan-fee-line"><span>${escapeHtml(line.name)}<small>${Number(line.amount) === 0 ? '未收取' : escapeHtml(line.formula || '')}</small></span><span>${money(Number(line.amount), currency)}</span></div>`).join('')
     : '<div class="tplan-fee-line"><span>无费用</span><span>--</span></div>';
-  const legRow = (side, unit, quantity, gross, fees, key, lines) => `<tr><td><span class="tplan-side">${side}</span></td><td>${priceMoney(unit, currency)}</td><td>${number(quantity, 4)}</td><td>${money(gross, currency)}</td><td>${money(fees, currency)}<button class="tplan-fee-toggle" type="button" data-fee="${key}">明细</button></td></tr><tr class="tplan-fee-row hidden" data-fee-row="${key}"><td colspan="5"><div class="tplan-fee-lines">${feeLines(lines)}</div></td></tr>`;
+  const legRow = (side, unit, quantity, gross, fees, key, lines) => `<tr><td><span class="tplan-side">${side}</span></td><td>${priceMoney(unit, currency)}</td><td>${number(quantity, 4)}</td><td>${money(gross, currency)}</td><td>${money(fees, currency)}<button class="text-action compact tplan-fee-toggle" type="button" data-fee="${key}">明细</button></td></tr><tr class="tplan-fee-row hidden" data-fee-row="${key}"><td colspan="5"><div class="tplan-fee-lines">${feeLines(lines)}</div></td></tr>`;
   const legsTable = `<table class="tplan-legs"><thead><tr><th>方向</th><th>单价</th><th>数量</th><th>成交金额</th><th>费用</th></tr></thead><tbody>${legRow(knownSide, knownUnit, qty, Number(plan.known_gross), Number(plan.known_fees), 'known', plan.known_fee_lines)}${legRow(otherSide, targetUnit, qty, Number(plan.solved_gross), Number(plan.solved_fees), 'target', plan.solved_fee_lines)}</tbody><tfoot><tr><td colspan="4">合计费用</td><td>${money(totalFees, currency)}</td></tr></tfoot></table>`;
   const costHtml = (() => {
     if (plan.status === 'closed' && plan.executed_cost_before != null && plan.executed_cost_after != null) {
-      return `<div class="tplan-costcompare"><div class="tplan-cell"><span>执行前每股成本</span><strong class="cost-value">${priceMoney(Number(plan.executed_cost_before), currency)}</strong></div><span class="cost-arrow" aria-hidden="true">→</span><div class="tplan-cell"><span>执行后每股成本</span><strong class="cost-value">${priceMoney(Number(plan.executed_cost_after), currency)}</strong></div></div>`;
+      return `<div class="tplan-costcompare"><div class="tplan-cell"><span>执行前每股成本</span><strong class="cost-value">${money(Number(plan.executed_cost_before), currency)}</strong></div><span class="cost-arrow" aria-hidden="true">→</span><div class="tplan-cell"><span>执行后每股成本</span><strong class="cost-value">${money(Number(plan.executed_cost_after), currency)}</strong></div></div>`;
     }
     if (plan.live_unit_cost != null && plan.live_cost_after != null) {
-      return `<div class="tplan-costcompare"><div class="tplan-cell"><span>当前每股成本</span><strong class="cost-value">${priceMoney(Number(plan.live_unit_cost), currency)}</strong></div><span class="cost-arrow" aria-hidden="true">→</span><div class="tplan-cell"><span>完成做T后每股成本</span><strong class="cost-value">${priceMoney(Number(plan.live_cost_after), currency)}</strong></div></div>`;
+      return `<div class="tplan-costcompare"><div class="tplan-cell"><span>当前每股成本</span><strong class="cost-value">${money(Number(plan.live_unit_cost), currency)}</strong></div><span class="cost-arrow" aria-hidden="true">→</span><div class="tplan-cell"><span>完成做T后每股成本</span><strong class="cost-value">${money(Number(plan.live_cost_after), currency)}</strong></div></div>`;
     }
-    if (plan.live_unit_cost != null) return `<p class="tplan-bridge">当前每股成本 ${priceMoney(Number(plan.live_unit_cost), currency)}</p>`;
+    if (plan.live_unit_cost != null) return `<p class="tplan-bridge">当前每股成本 ${money(Number(plan.live_unit_cost), currency)}</p>`;
     return '';
   })();
   const compareHtml = (plan.status === 'closed' && executed) ? (() => {
@@ -2329,25 +2366,25 @@ async function renderTfeedbackLegActions(plan, leg) {
   const link = (plan.links || []).find(item => item.leg === leg);
   if (status) { status.textContent = link ? '已关联' : '未关联'; status.className = `tfeedback-leg-status${link ? '' : ' wait'}`; }
   if (link) {
-    box.innerHTML = `<div class="tfeedback-linked"><span>${escapeHtml((link.trade_date || '').slice(5, 10))} · ${link.side === 'buy' ? '买入' : '卖出'} ${number(Number(link.quantity), 4)} 股 @ ${priceMoney(Number(link.unit_price), currency)}</span><button class="tfeedback-unlink" type="button">解除</button></div>`;
-    box.querySelector('.tfeedback-unlink').addEventListener('click', () => unlinkTplanLeg(plan, leg));
+    const unlinkBtn = plan.status === 'open' ? '<button class="text-action danger tfeedback-unlink" type="button">解除</button>' : '';
+    box.innerHTML = `<div class="tfeedback-linked"><span>${escapeHtml((link.trade_date || '').slice(5, 10))} · ${link.side === 'buy' ? '买入' : '卖出'} ${number(Number(link.quantity), 4)} 股 @ ${priceMoney(Number(link.unit_price), currency)}</span>${unlinkBtn}</div>`;
+    const unlink = box.querySelector('.tfeedback-unlink');
+    if (unlink) unlink.addEventListener('click', () => unlinkTplanLeg(plan, leg));
     return;
   }
+  if (plan.status !== 'open') { box.innerHTML = '<span class="tfeedback-loading muted">未关联成交</span>'; return; }
   box.innerHTML = '<span class="tfeedback-loading muted">读取成交记录…</span>';
-  const mintHtml = '<button class="tfeedback-mint" type="button">按计划价新增</button>';
   try {
     const data = await request(`/api/t-plans/${plan.id}/candidates?leg=${leg}`);
     const trades = asArray(data, ['trades']);
     const options = trades.map(trade => `<option value="trade:${trade.id}">${escapeHtml((trade.trade_date || '').slice(5, 10))} ${trade.side === 'buy' ? '买入' : '卖出'} ${number(Number(trade.quantity), 4)} @ ${priceMoney(Number(trade.unit_price), currency)}</option>`);
-    box.innerHTML = `<div class="tfeedback-leg-controls"><select class="tfeedback-link-select"><option value="">选择可关联成交…</option>${options.join('')}</select><button class="tfeedback-link-go" type="button" disabled>关联</button>${mintHtml}</div>`;
+    box.innerHTML = `<div class="tfeedback-leg-controls"><select class="tfeedback-link-select"><option value="">选择可关联成交…</option>${options.join('')}</select><button class="tfeedback-link-go" type="button" disabled>关联</button></div>`;
     const select = box.querySelector('select');
     const go = box.querySelector('.tfeedback-link-go');
     select.addEventListener('change', () => { go.disabled = !select.value; });
     go.addEventListener('click', () => { if (select.value) linkTplanTrade(plan, select.value); });
-    box.querySelector('.tfeedback-mint').addEventListener('click', () => mintTplanLeg(plan, leg));
   } catch (error) {
-    box.innerHTML = `<div class="tfeedback-leg-error"><span class="muted">可关联成交读取失败：${escapeHtml(error.message)}</span>${mintHtml}</div>`;
-    box.querySelector('.tfeedback-mint').addEventListener('click', () => mintTplanLeg(plan, leg));
+    box.innerHTML = `<div class="tfeedback-leg-error"><span class="muted">可关联成交读取失败：${escapeHtml(error.message)}</span></div>`;
   }
 }
 
@@ -2360,17 +2397,8 @@ async function linkTplanTrade(plan, value) {
   } catch (error) { toast(error.message, true); }
 }
 
-async function mintTplanLeg(plan, leg) {
-  try {
-    const data = await request(`/api/t-plans/${plan.id}/trades`, { method: 'POST', body: { leg } });
-    toast('已按计划价新增成交并关联');
-    await loadDashboard();
-    await handleLinkedPlan(data.plan);
-  } catch (error) { toast(error.message, true); }
-}
-
 async function unlinkTplanLeg(plan, leg) {
-  if (!await confirmDialog('解除后这笔成交不再计入计划，成交记录保留。确认解除？', '解除关联')) return;
+  if (!await confirmDialog('解除后这笔成交不再计入计划，计划会退回进行中，成交记录保留。确认解除？', '解除关联')) return;
   try {
     const data = await request(`/api/t-plans/${plan.id}/link?leg=${encodeURIComponent(leg)}`, { method: 'DELETE' });
     await handleLinkedPlan(data.plan);
@@ -2379,8 +2407,9 @@ async function unlinkTplanLeg(plan, leg) {
 
 async function handleLinkedPlan(plan) {
   await loadTplans();
-  if (plan.status === 'open') openFeedback(plan);
-  else { toast('计划已完成'); closeFeedbackModal(); }
+  if (!plan) return;
+  if (plan.status === 'closed') toast('两笔成交已关联，计划已完成');
+  openFeedback(plan);
 }
 
 function openFeedback(plan) {
@@ -2406,11 +2435,10 @@ function openFeedback(plan) {
   $('#tfeedback-predict-price').textContent = priceMoney(Number(plan.solved_unit_price), currency);
   $('#tfeedback-target').textContent = signedMoney(net, currency);
   $('#tfeedback-target').className = pnlClass(net);
-  $('#tfeedback-currency').textContent = currencyLabel(currency);
+  state.tfeedbackTarget = targetLink ? Number(targetLink.unit_price) : null;
+  state.tfeedbackTargetTrade = targetLink ? { gross: Number(targetLink.gross_amount), fees: Number(targetLink.fee_total) } : null;
+  state.tfeedbackReady = Boolean(knownLink && targetLink);
   renderTfeedbackLinks(plan);
-  $('#tfeedback-price').value = tplanPriceValue(targetLink ? targetLink.unit_price : plan.solved_unit_price, currency);
-  $('#tfeedback-note').value = '';
-  $('#tfeedback-price').disabled = false;
   updateFeedbackCalc();
   openModal('#tfeedback-modal');
 }
@@ -2419,32 +2447,33 @@ function updateFeedbackCalc() {
   const plan = state.tfeedbackPlan;
   if (!plan) return;
   const currency = plan.currency || 'CNY';
-  const price = Number($('#tfeedback-price').value || 0);
+  const price = state.tfeedbackTarget;
   const qty = Number(plan.quantity);
   const base = Number(plan.base);
-  const save = $('#tfeedback-save');
+  const hint = $('#tfeedback-link-hint');
+  const badge = $('#tfeedback-badge');
   const set = (selector, text, className) => {
     const el = $(selector);
     if (!el) return;
     el.textContent = text;
     if (className !== undefined) el.className = className;
   };
-  if (!(price > 0) || !(qty > 0)) {
+  if (hint) hint.classList.toggle('hidden', Boolean(state.tfeedbackReady));
+  if (badge) {
+    badge.textContent = state.tfeedbackReady ? (Number(plan.actual_net ?? 0) >= Number(plan.plan_net) ? '达标' : '未达标') : '待回填';
+    badge.className = `tfeedback-badge${state.tfeedbackReady ? '' : ' wait'}`;
+  }
+  if (!(price > 0) || !(qty > 0) || !state.tfeedbackReady) {
     set('#tfeedback-actual-net', '--', '');
     set('#tfeedback-net-rate', '--', '');
     set('#tfeedback-delta', '--', '');
     set('#tfeedback-price-delta', '--', '');
     set('#tfeedback-actual-gross', '--', '');
     set('#tfeedback-fee-rate', '--', '');
-    if (save) save.disabled = true;
     return;
   }
-  const gross = roundHalfUp3(price * qty);
-  const mk = String(plan.security_id).startsWith('HK:') ? 'hk' : 'a';
-  const feeMarket = mk === 'hk' ? 'HK' : ({ SSE: 'SH', SZSE: 'SZ', BSE: 'BSE' }[plan.exchange] || 'SH');
-  const side = plan.direction === 'buy_first' ? 'sell' : 'buy';
-  const rules = (state.feeRules[mk] || []).filter(rule => (mk === 'a' || rule.market === feeMarket) && rule.side === side);
-  const fees = rules.reduce((sum, rule) => sum + calculateFee(rule, gross), 0);
+  const gross = roundHalfUp3(state.tfeedbackTargetTrade.gross);
+  const fees = state.tfeedbackTargetTrade.fees;
   const knownGross = state.tfeedbackKnown ? state.tfeedbackKnown.gross : Number(plan.known_gross);
   const knownFees = state.tfeedbackKnown ? state.tfeedbackKnown.fees : Number(plan.known_fees);
   const net = plan.direction === 'buy_first' ? (gross - fees) - (knownGross + knownFees) : (knownGross - knownFees) - (gross + fees);
@@ -2458,23 +2487,9 @@ function updateFeedbackCalc() {
   set('#tfeedback-delta', signedMoney(delta, currency), pnlClass(delta));
   set('#tfeedback-price-delta', price ? `${price >= solvedUnit ? '高于' : '低于'} ${Math.abs(priceDeltaPct).toFixed(2)}%` : '--', '');
   set('#tfeedback-fee-rate', base ? `${((knownFees + fees) / base * 100).toFixed(2)}%` : '--', '');
-  if (save) save.disabled = false;
 }
 
 function closeFeedbackModal() { closeModal('#tfeedback-modal'); }
-
-async function saveFeedback() {
-  const plan = state.tplans.find(p => String(p.id) === String(state.tfeedbackId));
-  if (!plan) return;
-  if (!applyValidation([[ $('#tfeedback-price'), positiveError($('#tfeedback-price').value, '实际成交单价') ]])) return;
-  const body = { executed: true, actual_unit_price: Number($('#tfeedback-price').value), note: $('#tfeedback-note').value.trim() };
-  try {
-    await request(`/api/t-plans/${plan.id}`, { method: 'PUT', body });
-    toast('回填已保存');
-    closeFeedbackModal();
-    await loadTplans();
-  } catch (error) { toast(error.message, true); }
-}
 
 const ROUTE_PAGES = { '/': 'overview', '/overview': 'overview', '/board': 'board', '/watch': 'watch', '/trade': 'trade', '/review': 'review' };
 function routePage() { return ROUTE_PAGES[location.pathname] || 'overview'; }
@@ -2489,32 +2504,90 @@ function navigate(page) { $$('.nav-item').forEach(item => item.classList.toggle(
 function openSettings() { openModal('#settings-modal'); renderFeeRules(); }
 
 const AUDIT_PAGE_SIZE = 20;
+const AUDIT_WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function auditMenuChips(menus) {
+  const total = menus.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const list = [{ menu: '', menu_label: '全部', count: total }, ...menus];
+  return list.map(item => `<button class="audit-chip${item.menu === state.auditMenu ? ' active' : ''}" type="button" data-menu="${escapeAttr(item.menu)}">${escapeHtml(item.menu_label)} <i>${Number(item.count || 0)}</i></button>`).join('');
+}
+
 async function loadAuditLogs(page = 1) {
   const box = $('#audit-log-list');
   if (!box) return;
-  box.innerHTML = '<div class="muted">加载中…</div>';
+  const hasRows = box.dataset.loaded === '1';
+  if (hasRows) {
+    box.classList.add('audit-loading');
+    $('#audit-prev').disabled = true;
+    $('#audit-next').disabled = true;
+  } else {
+    box.innerHTML = '<div class="muted" style="padding:18px">加载中…</div>';
+  }
   try {
     const current = Math.max(1, page);
-    const data = await request(`/api/audit-logs?limit=${AUDIT_PAGE_SIZE}&offset=${(current - 1) * AUDIT_PAGE_SIZE}`);
+    const params = new URLSearchParams({ limit: String(AUDIT_PAGE_SIZE), offset: String((current - 1) * AUDIT_PAGE_SIZE) });
+    if (state.auditMenu) params.set('menu', state.auditMenu);
+    if (state.auditQuery) params.set('q', state.auditQuery);
+    const data = await request(`/api/audit-logs?${params}`);
     const logs = asArray(data, ['logs', 'items']);
-    box.innerHTML = logs.length ? logs.map(item => {
-      const summary = item.summary || '';
-      return `<div class="audit-row"><span class="audit-action">${escapeHtml(AUDIT_ACTION_LABELS[item.action] || item.action)}</span><small>${formatDateTime(item.created_at)}</small>${summary ? `<em>${escapeHtml(summary)}</em>` : ''}</div>`;
-    }).join('') : '<div class="muted">还没有操作记录。</div>';
-    const total = Math.max(0, Number(data?.total) || logs.length);
+    const menus = asArray(data, ['menus']);
+    const total = Math.max(0, Number(data?.total) || 0);
     const pages = Math.max(1, Math.ceil(total / AUDIT_PAGE_SIZE));
     state.auditPage = Math.min(current, pages);
-    $('#audit-pager').classList.toggle('hidden', total === 0);
+    const signature = JSON.stringify([state.auditMenu, menus]);
+    if (signature !== state.auditMenuSignature) {
+      state.auditMenuSignature = signature;
+      $('#audit-menus').innerHTML = auditMenuChips(menus);
+    }
+    if (!logs.length) {
+      const filtered = Boolean(state.auditQuery || state.auditMenu);
+      box.innerHTML = `<div class="empty-state">${filtered ? '没有符合条件的操作记录。' : '还没有操作记录。'}</div>`;
+    } else {
+      const groups = [];
+      logs.forEach(item => {
+        const [date, time] = formatDateTime(item.created_at).split(' ');
+        let group = groups.find(entry => entry.date === date);
+        if (!group) { group = { date, items: [] }; groups.push(group); }
+        group.items.push({ ...item, time });
+      });
+      box.innerHTML = groups.map(group => {
+        const weekday = AUDIT_WEEKDAYS[new Date(`${group.date}T00:00:00`).getDay()] || '';
+        return `<div class="audit-day"><b>${escapeHtml(group.date)} ${weekday}</b><span>${group.items.length} 条</span></div>` + group.items.map(item => {
+          const unknown = item.menu === 'other';
+          const actionLabel = item.action_label || item.action;
+          const desc = item.summary ? `<b>${escapeHtml(actionLabel)}</b> · ${escapeHtml(item.summary)}` : `<b>${escapeHtml(actionLabel)}</b>`;
+          return `<div class="audit-simple-row"><span class="audit-time">${escapeHtml(item.time || '')}</span><span><span class="audit-menu-tag${unknown ? ' unknown' : ''}">${escapeHtml(item.menu_label || '其他')}</span></span><span class="audit-desc">${desc}</span></div>`;
+        }).join('');
+      }).join('');
+    }
     $('#audit-page-info').textContent = `第 ${state.auditPage} / ${pages} 页 · 共 ${total} 条`;
     $('#audit-prev').disabled = state.auditPage <= 1;
-    $('#audit-next').disabled = state.auditPage >= pages;
-    box.scrollTop = 0;
+    $('#audit-next').disabled = state.auditPage >= pages || total === 0;
+    box.dataset.loaded = '1';
+    box.classList.remove('audit-loading');
+    const scroller = $('#audit-modal .audit-scroll');
+    if (scroller) scroller.scrollTop = 0;
   } catch (error) {
-    box.innerHTML = `<div class="muted">${escapeHtml(error.message)}</div>`;
+    box.classList.remove('audit-loading');
+    $('#audit-prev').disabled = state.auditPage <= 1;
+    $('#audit-next').disabled = false;
+    box.innerHTML = `<div class="muted" style="padding:18px">${escapeHtml(error.message)}</div>`;
   }
 }
 function closeSettings() { closeModal('#settings-modal'); }
-function openAuditLog() { openModal('#audit-modal'); loadAuditLogs(1); }
+function openAuditLog() {
+  state.auditMenu = '';
+  state.auditQuery = '';
+  state.auditPage = 1;
+  state.auditMenuSignature = '';
+  const box = $('#audit-log-list');
+  if (box) { delete box.dataset.loaded; box.classList.remove('audit-loading'); }
+  $('#audit-search').value = '';
+  const actor = ($('#account-name')?.textContent || '').trim() || '-';
+  $('#audit-actor').textContent = `操作人：${actor}`;
+  openModal('#audit-modal');
+  loadAuditLogs(1);
+}
 function closeAuditLog() { closeModal('#audit-modal'); }
 async function openHistory() {
   state.historyPage = 0;
@@ -2597,6 +2670,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#audit-close').addEventListener('click', closeAuditLog);
   $('#audit-prev').addEventListener('click', () => loadAuditLogs(state.auditPage - 1));
   $('#audit-next').addEventListener('click', () => loadAuditLogs(state.auditPage + 1));
+  $('#audit-search').addEventListener('input', event => {
+    state.auditQuery = event.target.value.trim();
+    window.clearTimeout(loadAuditLogs.timer);
+    loadAuditLogs.timer = window.setTimeout(() => loadAuditLogs(1), 240);
+  });
+  $('#audit-menus').addEventListener('click', event => {
+    const chip = event.target.closest('.audit-chip');
+    if (!chip) return;
+    state.auditMenu = chip.dataset.menu || '';
+    $$('#audit-menus .audit-chip').forEach(item => item.classList.toggle('active', (item.dataset.menu || '') === state.auditMenu));
+    loadAuditLogs(1);
+  });
   $('#open-history-btn').addEventListener('click', openHistory);
   $('#history-close').addEventListener('click', closeHistory);
   $('#open-review-btn').addEventListener('click', () => {
@@ -2623,7 +2708,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#tplan-view-done').addEventListener('click', closeTplanView);
   $('#tfeedback-close').addEventListener('click', closeFeedbackModal);
   $('#tfeedback-cancel').addEventListener('click', closeFeedbackModal);
-  $('#tfeedback-save').addEventListener('click', saveFeedback);
   syncTplanTargetUI();
   $('#tplan-target-type').addEventListener('change', () => { syncTplanTargetUI(); markTplanStale(); });
   $$('#tplan-target-modes button').forEach(button => button.addEventListener('click', () => { $('#tplan-target-type').value = button.dataset.tt; syncTplanTargetUI(); markTplanStale(); }));
@@ -2635,7 +2719,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#tplan-calc').addEventListener('click', calcTplan);
   $('#tplan-search').addEventListener('input', event => { state.tplanSearch = event.target.value.trim(); renderTplans(); });
   $$('#tplan-status-tabs button').forEach(button => button.addEventListener('click', () => { state.tplanStatus = button.dataset.tstatus; renderTplans(); }));
-  $('#tfeedback-price').addEventListener('input', updateFeedbackCalc);
   $('#cash-manage').addEventListener('click', () => openCashModal());
   $$('#cash-currency-tabs button').forEach(button => button.addEventListener('click', () => { $('#cash-currency').value = button.dataset.cashCurrency; syncCashModalUI(); }));
   $$('#cash-kind-tabs button').forEach(button => button.addEventListener('click', () => { $('#cash-kind').value = button.dataset.cashKind; syncCashModalUI(); }));
@@ -2660,11 +2743,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   $$('[data-go]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.go)));
   bindSecurityCombo({ inputSel: '#security-search', listSel: '#security-results', chipSel: '#selected-security', getState: () => state.selectedSecurity, search: searchSecurities, heldOnly: () => state.side === 'sell', onHolding: selectSecurity, onSecurity: selectSecurity });
   document.addEventListener('mousedown', event => { if (event.target.closest('.security-results') || event.target.closest('.selected-security') || event.target.classList.contains('combo-input')) return; $$('.security-results').forEach(item => item.classList.add('hidden')); });
-  $$('#trade-form .direction').forEach(button => button.addEventListener('click', () => { state.side = button.dataset.side; $('#trade-side').value = state.side; $$('#trade-form .direction').forEach(item => { item.classList.remove('active', 'buy', 'sell'); if (item === button) item.classList.add('active', state.side); }); if (state.side === 'sell' && state.selectedSecurity && heldQuantity(state.selectedSecurity.security_id ?? state.selectedSecurity.id) <= 0) clearSecurity(); syncSellQtyLimit(); if ($('#security-search').value.trim()) searchSecurities($('#security-search').value); else if (!$('#security-results').classList.contains('hidden')) openComboByChip('#selected-security'); renderFeePreview(); }));
+  $$('#trade-form .direction').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; setTradeSide(button.dataset.side); if ($('#security-search').value.trim()) searchSecurities($('#security-search').value); else if (!$('#security-results').classList.contains('hidden')) openComboByChip('#selected-security'); }));
   $('#trade-price').addEventListener('input', renderFeePreview); $('#trade-quantity').addEventListener('input', renderFeePreview); $('#trade-form').addEventListener('submit', submitTrade); $('#history-filter').addEventListener('input', event => { state.historyPage = 0; renderTrades(); const value = event.target.value.trim(); window.clearTimeout(openHistoryDropdown.timer); openHistoryDropdown.timer = window.setTimeout(() => openHistoryDropdown(value), 220); });
   $('#history-filter').addEventListener('focus', () => { if (!$('#history-filter').value.trim()) openHistoryDropdown(''); });
   $('#history-filter').addEventListener('click', () => { if (!$('#history-filter').value.trim()) openHistoryDropdown(''); });
-  $('#history-filter').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('#history-results').classList.contains('hidden')) { event.stopPropagation(); $('#history-results').classList.add('hidden'); } }); $$('#history-side-tabs button').forEach(button => button.addEventListener('click', () => { state.historySide = button.dataset.hside || ''; state.historyPage = 0; $$('#history-side-tabs button').forEach(item => item.classList.toggle('active', item === button)); renderTrades(); })); $('#history-prev').addEventListener('click', () => { state.historyPage = Math.max(0, state.historyPage - 1); renderTrades(); }); $('#history-next').addEventListener('click', () => { state.historyPage += 1; renderTrades(); }); $('#save-fees-btn').addEventListener('click', saveFeeRules); $('#save-cost-method').addEventListener('click', saveCostMethod);
+  $('#history-filter').addEventListener('keydown', event => { if (event.key === 'Escape' && !$('#history-results').classList.contains('hidden')) { event.stopPropagation(); $('#history-results').classList.add('hidden'); } }); $$('#history-side-tabs button').forEach(button => button.addEventListener('click', () => { state.historySide = button.dataset.hside || ''; state.historyPage = 0; $$('#history-side-tabs button').forEach(item => item.classList.toggle('active', item === button)); renderTrades(); })); $('#history-prev').addEventListener('click', () => { state.historyPage = Math.max(0, state.historyPage - 1); renderTrades(); }); $('#history-next').addEventListener('click', () => { state.historyPage += 1; renderTrades(); }); $('#save-settings').addEventListener('click', saveSettings);
   syncRangeTabs();
   $$('.range').forEach(button => button.addEventListener('click', async () => { state.range = button.dataset.range; syncRangeTabs(); if (state.chartSecurity) await selectChartSecurity(state.chartSecurity.id, state.chartSecurity.name, state.chartSecurity.code, state.chartSecurity.currency); }));
   $$('#watch-markets .market-pill').forEach(button => button.addEventListener('click', () => { state.watchMarket = button.dataset.wmarket; renderWatch(); }));

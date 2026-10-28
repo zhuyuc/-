@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>操作日志 · 三列精简版</title>
+<style>
+  :root{
+    --bg:#eef1ec; --panel:#ffffff; --ink:#1e2b26; --ink-soft:#3d4b45; --muted:#6d7b75; --muted-2:#95a09a;
+    --line:#e6e9e3; --row-line:#eef1ec; --teal:#2a7d6f; --teal-soft:#e7f2ee; --teal-deep:#0f3d35;
+    --surface-2:#f4f7f3; --danger:#c0392b; --shadow:0 30px 80px rgba(10,30,24,.25);
+  }
+  .stage.dark{
+    --bg:#0e1815; --panel:#16231f; --ink:#e8f0ec; --ink-soft:#c3d2cb; --muted:#93a59e; --muted-2:#6f837b;
+    --line:#27362f; --row-line:#1f2c26; --teal:#5fb3a4; --teal-soft:rgba(95,179,164,.14); --teal-deep:#8ed0c3;
+    --surface-2:#1b2a25; --danger:#e07a6e; --shadow:0 30px 80px rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .stage{min-height:100vh;background:var(--bg);color:var(--ink);padding:34px 24px 50px;position:relative;transition:background .2s,color .2s}
+  .stage::before{content:"";position:fixed;inset:0;background:
+    radial-gradient(600px 300px at 12% 8%, rgba(42,125,111,.10), transparent 70%),
+    radial-gradient(700px 340px at 88% 92%, rgba(42,125,111,.08), transparent 70%);pointer-events:none}
+  .topline{max-width:1120px;margin:0 auto 14px;display:flex;align-items:flex-end;justify-content:space-between;gap:16px;position:relative;z-index:2;flex-wrap:wrap}
+  .topline h1{font-size:19px;margin:0 0 5px;letter-spacing:-.2px}
+  .topline p{margin:0;font-size:12px;color:var(--muted);line-height:1.7}
+  .topline code{font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--ink-soft)}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .ghost{height:34px;padding:0 12px;border-radius:9px;border:1px dashed var(--line);background:transparent;color:var(--muted);font-size:11.5px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
+  .ghost:hover{border-color:var(--teal);color:var(--teal)}
+  .theme-btn{height:34px;padding:0 14px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;flex:none;font-family:inherit}
+  .theme-btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+
+  .modal{max-width:1080px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;position:relative;z-index:2;display:flex;flex-direction:column;max-height:calc(100vh - 170px);min-height:560px}
+  .modal-head{display:flex;align-items:flex-start;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--line)}
+  .modal-head h2{margin:0;font-size:15px;font-weight:600}
+  .modal-head p{margin:4px 0 0;font-size:11.5px;color:var(--muted)}
+  .close{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:16px;line-height:1;cursor:pointer}
+
+  .toolbar{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+  .search{flex:1;min-width:180px;max-width:300px;height:34px;border:1px solid var(--line);border-radius:9px;display:flex;align-items:center;gap:7px;padding:0 10px;background:var(--surface-2);color:var(--muted)}
+  .search input{border:0;background:transparent;outline:none;color:var(--ink);font-size:12px;width:100%;font-family:inherit}
+  .search svg{width:14px;height:14px;stroke:var(--muted);fill:none;stroke-width:1.8;flex:none}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
+  .chip i{font-style:normal;font-size:10.5px;color:var(--muted-2)}
+  .chip.on{background:var(--teal-deep);border-color:var(--teal-deep);color:var(--panel)}
+  .stage.dark .chip.on{color:#0e1815}
+  .chip.on i{color:inherit;opacity:.65}
+  .chip.new{animation:pop .5s ease}
+  @keyframes pop{0%{transform:scale(.85);opacity:0}100%{transform:scale(1);opacity:1}}
+
+  .log-scroll{overflow-y:auto;flex:1;min-height:0}
+  .thead{display:grid;grid-template-columns:88px 132px minmax(0,1fr);gap:10px;padding:10px 18px;position:sticky;top:0;z-index:3;background:var(--panel);border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;letter-spacing:.3px}
+  .day{padding:9px 18px;background:var(--surface-2);border-bottom:1px solid var(--row-line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;position:sticky;top:37px;z-index:2}
+  .day b{color:var(--ink-soft);font-weight:600}
+  .row{border-bottom:1px solid var(--row-line);cursor:pointer}
+  .row-main{display:grid;grid-template-columns:88px 132px minmax(0,1fr);gap:10px;align-items:center;padding:11px 18px;font-size:12.5px}
+  .row:hover .row-main{background:var(--surface-2)}
+  .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;white-space:nowrap}
+  .actor{display:flex;align-items:center;gap:7px;min-width:0}
+  .avatar{width:20px;height:20px;border-radius:50%;background:var(--teal-soft);color:var(--teal);display:grid;place-items:center;font-size:10px;font-weight:700;flex:none}
+  .actor span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .menu-cell{min-width:0}
+  .menu-tag{display:inline-block;font-size:11px;font-weight:600;color:var(--teal);background:var(--teal-soft);border-radius:6px;padding:3px 8px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .menu-cell.unknown .menu-tag{color:var(--muted);background:var(--surface-2);border:1px dashed var(--line)}
+  .desc{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12.5px}
+  .desc b{color:var(--ink);font-weight:600}
+  .desc.unknown b{font-weight:500;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--muted)}
+  .row.open .row-main{background:var(--teal-soft)}
+  .row-detail{display:none;padding:2px 18px 14px 18px;background:var(--surface-2);border-top:1px dashed var(--line)}
+  .row.open .row-detail{display:block}
+  .kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 16px;padding-top:10px}
+  .kv div{min-width:0}
+  .kv span{display:block;font-size:10.5px;color:var(--muted-2)}
+  .kv strong{display:block;margin-top:3px;font-size:12px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row-meta{margin-top:10px;font-size:10.5px;color:var(--muted-2);display:flex;gap:14px;flex-wrap:wrap}
+  .empty{padding:40px 18px;text-align:center;color:var(--muted);font-size:12px}
+
+  .modal-foot{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);background:var(--panel)}
+  .pager{display:flex;align-items:center;gap:16px}
+  .pager button{border:0;background:transparent;color:var(--teal);font-size:12px;cursor:pointer;font-family:inherit;padding:0}
+  .pager button:disabled{color:var(--muted-2);cursor:default}
+  .pager span{font-variant-numeric:tabular-nums}
+
+  @media(max-width:860px){
+    .stage{padding:18px 10px 30px}
+    .topline{padding:0 4px}
+    .topline .actions{width:100%}
+    .modal{max-height:calc(100vh - 130px);min-height:520px}
+    .thead{grid-template-columns:58px 92px minmax(0,1fr);font-size:10.5px}
+    .row-main{grid-template-columns:58px 92px minmax(0,1fr);gap:8px;padding:10px 14px;align-items:start}
+    .desc{white-space:normal;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    .day{top:34px;padding:8px 14px}
+    .row-detail{padding:2px 14px 12px}
+    .kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .toolbar{padding:10px 14px}
+  }
+</style>
+</head>
+<body>
+<div class="stage dark" id="stage">
+  <div class="topline">
+    <div>
+      <h1>操作日志 · 三列精简版</h1>
+      <p>只有三个信息：时间 · 菜单 · 事情描述；操作人固定显示在标题（当前账号）。胶囊与菜单列来自服务端元数据，新增菜单前端零改动。</p>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="addModule">＋ 模拟新增菜单「研究报告」</button>
+      <button class="ghost" id="addUnknown">＋ 模拟未知动作（兜底）</button>
+      <button class="theme-btn" id="themeBtn"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg><span>切到浅色</span></button>
+    </div>
+  </div>
+
+  <section class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <div><h2>操作日志</h2><p>操作人：朱文袆 · 时间 / 菜单 / 事情</p></div>
+      <button class="close" aria-label="关闭">×</button>
+    </div>
+
+    <div class="toolbar">
+      <label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></svg><input id="q" placeholder="搜索股票、动作或内容…"></label>
+      <div class="chips" id="chips"></div>
+    </div>
+
+    <div class="log-scroll" id="logScroll">
+      <div class="thead"><span>时间</span><span>菜单</span><span>事情描述</span></div>
+      <div id="rows"></div>
+    </div>
+
+    <div class="modal-foot">
+      <div>第 <span>1</span> / 14 页 · 共 <span id="totalCount">262</span> 条</div>
+      <div class="pager"><button disabled>上一页</button><button>下一页</button></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  /* 服务端返回：每条记录自带 menu / menu_label / screen / action_label。
+     胶囊由 menu 去重生成；没有写操作的菜单（如盈亏看板）不会出现。 */
+  const logs = [
+    { date:'2026-10-28', time:'15:37', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'做T测算', action:'记录做T测算', detail:'小米集团-W 01810 · 先卖后买 2,000 股 27.400→25.756', meta:{ '股票':'小米集团-W 01810', '方向':'先卖后买', '数量':'2,000 股', '价格区间':'27.400 → 25.756' }, extra:'记录编号 #312' },
+    { date:'2026-10-28', time:'15:34', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'做T记录', action:'删除做T记录', detail:'小米集团-W 01810 · 先卖后买 2,000 股', meta:{ '股票':'小米集团-W 01810', '方向':'先卖后买', '数量':'2,000 股', '记录编号':'#311' }, extra:'删除后不可恢复' },
+    { date:'2026-10-28', time:'15:22', actor:'朱文袆', menu:'system', mlabel:'系统', screen:'设置', action:'修改成本算法', detail:'成本算法 摊薄成本', meta:{ '设置项':'成本算法', '修改为':'摊薄成本', '影响':'持仓成本与已实现盈亏重算', '成交记录':'不变' }, extra:'' },
+    { date:'2026-10-28', time:'10:49', actor:'朱文袆', menu:'trade', mlabel:'记录交易', screen:'交易记录', action:'作废交易', detail:'天风证券 601162 · 卖出 400 股 @ 3.40', meta:{ '股票':'天风证券 601162', '方向':'卖出', '数量':'400 股', '单价':'¥3.400' }, extra:'成交编号 #17 · 作废后不计入持仓' },
+    { date:'2026-10-28', time:'10:49', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'回填执行', action:'解除做T关联', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40 · 卖出 400 股 @ 3.40', meta:{ '股票':'天风证券 601162', '计划':'先买后卖 400 股', '关联成交':'卖出 400 股 @ ¥3.400', '结果':'计划退回进行中' }, extra:'成交记录保留' },
+    { date:'2026-10-28', time:'10:47', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'回填执行', action:'关联做T成交', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40 · 卖出 400 股 @ 3.40', meta:{ '股票':'天风证券 601162', '计划':'先买后卖 400 股', '关联成交':'卖出 400 股 @ ¥3.400', '结果':'两笔关联齐，计划已完成' }, extra:'' },
+    { date:'2026-10-28', time:'10:47', actor:'朱文袆', menu:'trade', mlabel:'记录交易', screen:'记录交易', action:'新增交易', detail:'天风证券 601162 · 卖出 400 股 @ 3.40', meta:{ '股票':'天风证券 601162', '方向':'卖出', '数量':'400 股', '单价':'¥3.400' }, extra:'成交编号 #17' },
+    { date:'2026-10-28', time:'10:41', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'回填执行', action:'做T计划恢复', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40', meta:{ '股票':'天风证券 601162', '计划':'先买后卖 400 股', '原因':'关联解除', '结果':'退回进行中' }, extra:'' },
+    { date:'2026-10-28', time:'10:35', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'回填执行', action:'做T回填', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40 · 已执行', meta:{ '股票':'天风证券 601162', '计划':'先买后卖 400 股', '结果':'已执行', '实际成交价':'¥3.400' }, extra:'历史回填记录' },
+    { date:'2026-10-28', time:'10:34', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'做T测算', action:'修改做T测算', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40', meta:{ '股票':'天风证券 601162', '方向':'先买后卖', '数量':'400 股', '目标':'3.400' }, extra:'' },
+    { date:'2026-10-27', time:'15:25', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'回填执行', action:'关联做T成交', detail:'天风证券 601162 · 先买后卖 400 股 3.35→3.40 · 买入 400 股 @ 3.35', meta:{ '股票':'天风证券 601162', '计划':'先买后卖 400 股', '关联成交':'买入 400 股 @ ¥3.350', '结果':'仍待卖出成交' }, extra:'' },
+    { date:'2026-10-26', time:'13:13', actor:'朱文袆', menu:'watch', mlabel:'建仓跟踪', screen:'建仓跟踪', action:'修改关注', detail:'腾讯控股 00700 · 目标价 300.000', meta:{ '股票':'腾讯控股 00700', '目标价':'HK$300.000', '状态':'关注中', '跟进':'—' }, extra:'' },
+    { date:'2026-10-25', time:'09:12', actor:'朱文袆', menu:'overview', mlabel:'持仓总览', screen:'资金账户', action:'入金', detail:'人民币 10,000.000', meta:{ '币种':'人民币', '类型':'入金', '金额':'¥10,000.000', '备注':'—' }, extra:'资金入口在持仓总览' },
+    { date:'2026-10-24', time:'16:40', actor:'朱文袆', menu:'review', mlabel:'复盘总结', screen:'复盘总结', action:'新增复盘', detail:'小米集团-W 01810 · 关于小米股价预期及后续发展思考…', meta:{ '股票':'小米集团-W 01810', '周期':'终身', '字数':'842 字', '摘要':'关于小米股价预期及后续发展思考…' }, extra:'' },
+  ];
+
+  let activeMenu = '';
+  let keyword = '';
+  let total = 262;
+  const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[ch]));
+
+  const chips = document.getElementById('chips');
+  const rowsBox = document.getElementById('rows');
+  const q = document.getElementById('q');
+
+  function visible() {
+    const kw = keyword.trim().toLowerCase();
+    return logs.filter(l => (!activeMenu || l.menu === activeMenu) && (!kw || [l.actor, l.mlabel, l.screen, l.action, l.detail].join(' ').toLowerCase().includes(kw)));
+  }
+
+  function menus() {
+    const map = new Map();
+    logs.forEach(l => {
+      if (!map.has(l.menu)) map.set(l.menu, { id:l.menu, label:l.mlabel, count:0 });
+      map.get(l.menu).count += 1;
+    });
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }
+
+  function drawChips(newId) {
+    const list = [{ id:'', label:'全部', count: logs.length }, ...menus()];
+    chips.innerHTML = list.map(m => {
+      const cls = `chip${m.id === activeMenu ? ' on' : ''}${newId && m.id === newId ? ' new' : ''}`;
+      return `<button class="${cls}" data-m="${m.id}">${esc(m.label)} <i>${m.count}</i></button>`;
+    }).join('');
+  }
+
+  function drawRows() {
+    const list = visible();
+    if (!list.length) { rowsBox.innerHTML = '<div class="empty">没有符合条件的操作记录。</div>'; return; }
+    const groups = [];
+    list.forEach(item => {
+      let g = groups.find(x => x.date === item.date);
+      if (!g) { g = { date: item.date, items: [] }; groups.push(g); }
+      g.items.push(item);
+    });
+    rowsBox.innerHTML = groups.map(g => {
+      const weekday = ['周日','周一','周二','周三','周四','周五','周六'][new Date(g.date + 'T00:00:00').getDay()];
+      return `<div class="day"><b>${g.date} ${weekday}</b><span>${g.items.length} 条</span></div>` + g.items.map(l => {
+        const meta = Object.entries(l.meta).map(([k, v]) => `<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('');
+        const unknown = l.menu === 'other';
+        return `<div class="row"><div class="row-main"><span class="time">${l.time}</span><span class="menu-cell${unknown ? ' unknown' : ''}"><span class="menu-tag">${esc(l.mlabel)}</span></span><span class="desc${unknown ? ' unknown' : ''}"><b>${esc(l.action)}</b> · ${esc(l.detail)}</span></div><div class="row-detail"><div class="kv">${meta}</div><div class="row-meta">${l.extra ? `<span>${esc(l.extra)}</span>` : ''}<span>操作人 ${esc(l.actor)}</span><span>${esc(l.mlabel)} · ${esc(l.screen)}</span><span>${g.date} ${l.time}</span></div></div></div>`;
+      }).join('');
+    }).join('');
+  }
+
+  chips.addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    activeMenu = chip.dataset.m;
+    drawChips(); drawRows();
+  });
+  q.addEventListener('input', () => { keyword = q.value; drawRows(); });
+  rowsBox.addEventListener('click', e => { const row = e.target.closest('.row'); if (row) row.classList.toggle('open'); });
+
+  document.getElementById('addModule').addEventListener('click', () => {
+    logs.unshift({
+      date:'2026-10-28', time:'16:02', actor:'朱文袆', menu:'research', mlabel:'研究报告', screen:'研究报告',
+      action:'新增研报', detail:'宁德时代 300750 · 储能订单与海外产能跟踪',
+      meta:{ '股票':'宁德时代 300750', '类型':'研报', '标签':'储能', '来源':'手动录入' }, extra:'演示：新增菜单后胶囊自动出现，前端零改动'
+    });
+    total += 1;
+    document.getElementById('totalCount').textContent = total;
+    activeMenu = '';
+    drawChips('research'); drawRows();
+  });
+
+  document.getElementById('addUnknown').addEventListener('click', () => {
+    logs.unshift({
+      date:'2026-10-28', time:'16:05', actor:'朱文袆', menu:'other', mlabel:'其他', screen:'未登记界面',
+      action:'portfolio_export', detail:'导出持仓 CSV · 未知动作按原始名兜底展示',
+      meta:{ '动作标识':'portfolio_export', '菜单':'未登记', '界面':'未登记', '兜底':'显示原始动作名' }, extra:'演示：服务端尚未注册元数据时，前端不崩、不丢记录'
+    });
+    total += 1;
+    document.getElementById('totalCount').textContent = total;
+    activeMenu = '';
+    drawChips('other'); drawRows();
+  });
+
+  document.getElementById('themeBtn').addEventListener('click', () => {
+    const stage = document.getElementById('stage');
+    stage.classList.toggle('dark');
+    document.querySelector('#themeBtn span').textContent = stage.classList.contains('dark') ? '切到浅色' : '切到深色';
+  });
+
+  drawChips();
+  drawRows();
+</script>
+</body>
+</html>
