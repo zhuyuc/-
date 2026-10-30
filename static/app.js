@@ -271,8 +271,11 @@ function showApp(user) {
   const name = state.user.username || state.user.name || '本地账号';
   $('#account-name').textContent = name;
   $('#account-avatar').textContent = name.slice(0, 1).toUpperCase();
-  loadDashboard();
-  syncPrices({ quiet: true }).then(() => loadDashboard(), () => loadDashboard());
+  const firstLoad = loadDashboard();
+  syncPrices({ quiet: true }).then(async result => {
+    try { await firstLoad; } catch { /* 首屏失败已提示 */ }
+    if (result?.updated > 0) loadDashboard({ priceOnly: true, silent: true });
+  }, () => {});
 }
 
 function syncStamp() { return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
@@ -306,11 +309,35 @@ async function syncPrices(options = {}) {
   return result;
 }
 
-async function loadDashboard() {
-  setRefreshing('#holdings-container', true);
-  setRefreshing('.summary-grid', true);
+function settle(promise) {
+  return promise.then(value => ({ value }), error => ({ error }));
+}
+
+async function loadDashboard(options = {}) {
+  const silent = !!options.silent;
+  const priceOnly = !!options.priceOnly;
+  if (!silent) {
+    setRefreshing('#holdings-container', true);
+    setRefreshing('.summary-grid', true);
+  }
+  const mainTask = settle(priceOnly
+    ? request('/api/portfolio')
+    : Promise.all([request('/api/portfolio'), request(tradesUrl(0)), request('/api/cash')]));
+  const feesTask = priceOnly ? null : settle(Promise.all(['A', 'HK'].map(market => request(`/api/fees?market=${market}`))));
+  const reviewTask = priceOnly ? null : settle(request('/api/reviews'));
   try {
-    const [portfolio, trades, cash] = await Promise.all([request('/api/portfolio'), request(tradesUrl(0)), request('/api/cash')]);
+    const main = await mainTask;
+    if (main.error) throw main.error;
+    if (priceOnly) {
+      const portfolio = main.value;
+      state.holdings = asArray(portfolio, ['holdings', 'positions', 'items']);
+      syncSellAvailability();
+      renderOverview(portfolio);
+      state.costMethod = portfolio?.cost_method || state.costMethod || 'moving_average';
+      if (portfolio?.cost_method) $('#cost-method').value = portfolio.cost_method;
+      return;
+    }
+    const [portfolio, trades, cash] = main.value;
     state.holdings = asArray(portfolio, ['holdings', 'positions', 'items']);
     syncSellAvailability();
     state.trades = asArray(trades, ['trades', 'items']);
@@ -321,26 +348,37 @@ async function loadDashboard() {
     state.costMethod = portfolio?.cost_method || state.costMethod || 'moving_average';
     if (portfolio?.cost_method) $('#cost-method').value = portfolio.cost_method;
   } catch (error) {
-    toast(error.message, true);
-    $('#holdings-container').innerHTML = `<div class="empty-state">暂时无法加载持仓数据。${escapeHtml(error.message)}</div>`;
+    if (!silent) {
+      toast(error.message, true);
+      $('#holdings-container').innerHTML = `<div class="empty-state">暂时无法加载持仓数据。${escapeHtml(error.message)}</div>`;
+    }
   } finally {
-    setRefreshing('#holdings-container', false);
-    setRefreshing('.summary-grid', false);
+    if (!silent) {
+      setRefreshing('#holdings-container', false);
+      setRefreshing('.summary-grid', false);
+    }
   }
-  try {
-    const [a, hk] = await Promise.all(['A', 'HK'].map(market => request(`/api/fees?market=${market}`)));
-    state.feeRules.a = asArray(a, ['rules', 'items']).map(rule => ({ ...rule, market: rule.market || 'SH' }));
-    state.feeRules.hk = asArray(hk, ['rules', 'items']).map(rule => ({ ...rule, market: rule.market || 'HK' }));
-    state.feeDisplay.a = mergeFeeSides(state.feeRules.a);
-    state.feeDisplay.hk = mergeFeeSides(state.feeRules.hk);
+  if (priceOnly) return;
+  const fees = await feesTask;
+  if (!fees.error) {
+    try {
+      const [a, hk] = fees.value;
+      state.feeRules.a = asArray(a, ['rules', 'items']).map(rule => ({ ...rule, market: rule.market || 'SH' }));
+      state.feeRules.hk = asArray(hk, ['rules', 'items']).map(rule => ({ ...rule, market: rule.market || 'HK' }));
+      state.feeDisplay.a = mergeFeeSides(state.feeRules.a);
+      state.feeDisplay.hk = mergeFeeSides(state.feeRules.hk);
+      renderFeeRules();
+      renderFeePreview();
+    } catch (error) { renderFeeRules(); renderFeePreview(); }
+  } else {
     renderFeeRules();
     renderFeePreview();
-  } catch (error) { renderFeeRules(); renderFeePreview(); }
-  try {
-    const reviewData = await request('/api/reviews');
-    state.reviews = asArray(reviewData, ['reviews', 'items']);
+  }
+  const reviews = await reviewTask;
+  if (!reviews.error) {
+    state.reviews = asArray(reviews.value, ['reviews', 'items']);
     renderReviewScopeMenu();
-  } catch { /* 侧边栏二级菜单允许静默失败 */ }
+  }
 }
 
 function applyCash(data) {

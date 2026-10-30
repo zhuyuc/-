@@ -2146,13 +2146,43 @@ class TradingHandler(BaseHTTPRequestHandler):
             if not candidate.is_file():
                 return False
         body = candidate.read_bytes()
+        is_index = candidate == root / "index.html"
+        if is_index:
+            body = self._version_static_refs(body, root)
+        etag = '"' + hashlib.sha256(body).hexdigest()[:32] + '"'
+        cache_control = "no-cache" if is_index else "public, max-age=31536000, immutable"
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_control)
+            self.end_headers()
+            return True
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(str(candidate))[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("ETag", etag)
         self.end_headers()
         self.wfile.write(body)
         return True
+
+    @staticmethod
+    def _version_static_refs(body: bytes, root: Path) -> bytes:
+        """把首页里的 /static/* 引用补上文件版本，静态资源即可长期缓存。"""
+        def replace(match: re.Match[bytes]) -> bytes:
+            attr, url = match.group(1), match.group(2)
+            if b"?" in url:
+                return match.group(0)
+            target = (root / unquote(url.decode("utf-8", "ignore")).removeprefix("/static/")).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError:
+                return match.group(0)
+            if not target.is_file():
+                return match.group(0)
+            version = str(int(target.stat().st_mtime_ns)).encode("ascii")
+            return attr + b'="' + url + b"?v=" + version + b'"'
+        return re.sub(rb'(src|href)="(/static/[^"]+)"', replace, body)
 
     def _search_securities(self, conn: sqlite3.Connection, query_text: str, market: str) -> dict[str, Any]:
         """只读检索账号本地名录；远程目录刷新是写操作，走 POST /api/securities/refresh。"""
